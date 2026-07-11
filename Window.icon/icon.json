@@ -5,12 +5,60 @@
       "layers" : [
         {
           "glass" : true,
+          "hidden" : true,
           "image-name" : "pointer.arrow.ipad.and.square.on.square.dashed 3.svg",
           "name" : "pointer.arrow.ipad.and.square.on.square.dashed 3",
           "position" : {
             "scale" : 30,
             "translation-in-points" : [
               0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "hidden" : true,
+          "image-name" : "square.fill.svg",
+          "name" : "square.fill",
+          "position" : {
+            "scale" : 30,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "square.on.square.svg",
+          "name" : "square.on.square",
+          "position" : {
+            "scale" : 30,
+            "translation-in-points" : [
+              -1.1368683772161603e-13,
               0
             ]
           }

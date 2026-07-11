@@ -2,6 +2,11 @@ import AppKit
 import ApplicationServices
 
 enum WindowController {
+    private static let animationDuration = 0.20
+    private static let animationFrameInterval = 1.0 / 60.0
+    private static var animationTask: Task<Void, Never>?
+    private static var animationGeneration = 0
+
     enum Placement {
         case maximize
         case leftHalf
@@ -49,7 +54,7 @@ enum WindowController {
             )
         }
 
-        set(frame: targetFrame, of: window)
+        animate(window: window, from: currentFrame, to: targetFrame)
     }
 
     static func hideOtherApplications() {
@@ -161,7 +166,72 @@ enum WindowController {
         )
     }
 
-    private static func set(frame: CGRect, of window: AXUIElement) {
+    private static func animate(window: AXUIElement, from startFrame: CGRect, to targetFrame: CGRect) {
+        animationTask?.cancel()
+        animationGeneration &+= 1
+        let generation = animationGeneration
+
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              startFrame != targetFrame else {
+            set(frame: targetFrame, of: window)
+            animationTask = nil
+            return
+        }
+
+        animationTask = Task { @MainActor in
+            let startTime = ProcessInfo.processInfo.systemUptime
+            var nextFrameTime = startTime
+
+            while !Task.isCancelled {
+                let currentTime = ProcessInfo.processInfo.systemUptime
+                let elapsed = currentTime - startTime
+                let progress = min(elapsed / animationDuration, 1)
+                let easedProgress = 1 - pow(1 - progress, 3)
+
+                if progress >= 1 {
+                    set(frame: targetFrame, of: window)
+                    break
+                }
+
+                set(
+                    frame: interpolate(from: startFrame, to: targetFrame, progress: easedProgress),
+                    of: window,
+                    reassertPosition: false
+                )
+
+                nextFrameTime += animationFrameInterval
+                let delay = nextFrameTime - ProcessInfo.processInfo.systemUptime
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                } else {
+                    await Task.yield()
+                }
+            }
+
+            if generation == animationGeneration {
+                animationTask = nil
+            }
+        }
+    }
+
+    private static func interpolate(from start: CGRect, to target: CGRect, progress: Double) -> CGRect {
+        func value(from start: CGFloat, to target: CGFloat) -> CGFloat {
+            start + (target - start) * progress
+        }
+
+        return CGRect(
+            x: value(from: start.minX, to: target.minX),
+            y: value(from: start.minY, to: target.minY),
+            width: value(from: start.width, to: target.width),
+            height: value(from: start.height, to: target.height)
+        )
+    }
+
+    private static func set(
+        frame: CGRect,
+        of window: AXUIElement,
+        reassertPosition: Bool = true
+    ) {
         var position = frame.origin
         var size = frame.size
         guard let positionValue = AXValueCreate(.cgPoint, &position),
@@ -172,6 +242,8 @@ enum WindowController {
         // Moving first prevents the current screen's edge constraints from limiting resizing.
         AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
         AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
-        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
+        if reassertPosition {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
+        }
     }
 }
