@@ -4,8 +4,24 @@ import ApplicationServices
 enum WindowController {
     private static let animationDuration = 0.20
     private static let animationFrameInterval = 1.0 / 60.0
-    private static var animationTask: Task<Void, Never>?
-    private static var animationGeneration = 0
+    private static var animationStates: [WindowAnimationState] = []
+    private static var managedMaximizedWindows: [ManagedMaximizedWindow] = []
+
+    private struct ManagedMaximizedWindow {
+        let window: AXUIElement
+        var lastRequestedFrame: CGRect
+        var lastObservedFrame: CGRect
+    }
+
+    private final class WindowAnimationState {
+        let window: AXUIElement
+        var task: Task<Void, Never>?
+        var generation = 0
+
+        init(window: AXUIElement) {
+            self.window = window
+        }
+    }
 
     enum Placement {
         case maximize
@@ -54,7 +70,84 @@ enum WindowController {
             )
         }
 
+        if case .maximize = placement {
+            manageMaximizedWindow(window, currentFrame: currentFrame, targetFrame: targetFrame)
+        } else {
+            stopManaging(window)
+        }
+
         animate(window: window, from: currentFrame, to: targetFrame)
+    }
+
+    static func refreshManagedMaximizedWindow(respectManualChanges: Bool = true) {
+        guard AXIsProcessTrusted() else {
+            managedMaximizedWindows.removeAll()
+            return
+        }
+
+        var retainedWindows: [ManagedMaximizedWindow] = []
+
+        for var managedWindow in managedMaximizedWindows {
+            guard let currentFrame = frame(of: managedWindow.window),
+                  let screen = screen(containing: currentFrame) else {
+                cancelAnimation(for: managedWindow.window)
+                continue
+            }
+
+            if respectManualChanges,
+               !isAnimating(managedWindow.window),
+               !approximatelyEqual(
+                   currentFrame,
+                   managedWindow.lastObservedFrame,
+                   tolerance: 8
+               ) {
+                cancelAnimation(for: managedWindow.window)
+                continue
+            }
+
+            let targetFrame = accessibilityFrame(for: screen)
+            if !approximatelyEqual(
+                targetFrame,
+                managedWindow.lastRequestedFrame,
+                tolerance: 1
+            ) {
+                managedWindow.lastRequestedFrame = targetFrame
+                managedWindow.lastObservedFrame = currentFrame
+                retainedWindows.append(managedWindow)
+                animate(window: managedWindow.window, from: currentFrame, to: targetFrame)
+            } else {
+                retainedWindows.append(managedWindow)
+            }
+        }
+
+        managedMaximizedWindows = retainedWindows
+    }
+
+    private static func manageMaximizedWindow(
+        _ window: AXUIElement,
+        currentFrame: CGRect,
+        targetFrame: CGRect
+    ) {
+        let managedWindow = ManagedMaximizedWindow(
+            window: window,
+            lastRequestedFrame: targetFrame,
+            lastObservedFrame: currentFrame
+        )
+
+        if let index = managedWindowIndex(for: window) {
+            managedMaximizedWindows[index] = managedWindow
+        } else {
+            managedMaximizedWindows.append(managedWindow)
+        }
+    }
+
+    private static func stopManaging(_ window: AXUIElement) {
+        managedMaximizedWindows.removeAll { CFEqual($0.window, window) }
+        cancelAnimation(for: window)
+    }
+
+    private static func managedWindowIndex(for window: AXUIElement) -> Int? {
+        managedMaximizedWindows.firstIndex { CFEqual($0.window, window) }
     }
 
     static func hideOtherApplications() {
@@ -167,18 +260,21 @@ enum WindowController {
     }
 
     private static func animate(window: AXUIElement, from startFrame: CGRect, to targetFrame: CGRect) {
-        animationTask?.cancel()
-        animationGeneration &+= 1
-        let generation = animationGeneration
+        let state = animationState(for: window)
+        state.task?.cancel()
+        state.generation &+= 1
+        let generation = state.generation
 
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               startFrame != targetFrame else {
             set(frame: targetFrame, of: window)
-            animationTask = nil
+            synchronizeManagedFrame(for: window)
+            state.task = nil
+            removeAnimationState(state)
             return
         }
 
-        animationTask = Task { @MainActor in
+        state.task = Task { @MainActor in
             let startTime = ProcessInfo.processInfo.systemUptime
             var nextFrameTime = startTime
 
@@ -208,10 +304,47 @@ enum WindowController {
                 }
             }
 
-            if generation == animationGeneration {
-                animationTask = nil
+            if generation == state.generation {
+                state.task = nil
+                synchronizeManagedFrame(for: window)
+                removeAnimationState(state)
             }
         }
+    }
+
+    private static func animationState(for window: AXUIElement) -> WindowAnimationState {
+        if let state = animationStates.first(where: { CFEqual($0.window, window) }) {
+            return state
+        }
+
+        let state = WindowAnimationState(window: window)
+        animationStates.append(state)
+        return state
+    }
+
+    private static func isAnimating(_ window: AXUIElement) -> Bool {
+        animationStates.contains { CFEqual($0.window, window) && $0.task != nil }
+    }
+
+    private static func cancelAnimation(for window: AXUIElement) {
+        guard let state = animationStates.first(where: { CFEqual($0.window, window) }) else {
+            return
+        }
+        state.task?.cancel()
+        state.task = nil
+        removeAnimationState(state)
+    }
+
+    private static func removeAnimationState(_ state: WindowAnimationState) {
+        animationStates.removeAll { $0 === state }
+    }
+
+    private static func synchronizeManagedFrame(for window: AXUIElement) {
+        guard let index = managedWindowIndex(for: window),
+              let actualFrame = frame(of: window) else {
+            return
+        }
+        managedMaximizedWindows[index].lastObservedFrame = actualFrame
     }
 
     private static func interpolate(from start: CGRect, to target: CGRect, progress: Double) -> CGRect {
@@ -225,6 +358,17 @@ enum WindowController {
             width: value(from: start.width, to: target.width),
             height: value(from: start.height, to: target.height)
         )
+    }
+
+    private static func approximatelyEqual(
+        _ lhs: CGRect,
+        _ rhs: CGRect,
+        tolerance: CGFloat
+    ) -> Bool {
+        return abs(lhs.minX - rhs.minX) <= tolerance
+            && abs(lhs.minY - rhs.minY) <= tolerance
+            && abs(lhs.width - rhs.width) <= tolerance
+            && abs(lhs.height - rhs.height) <= tolerance
     }
 
     private static func set(

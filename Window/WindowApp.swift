@@ -3,9 +3,11 @@ import ApplicationServices
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyManager: HotKeyManager?
+    private var workspaceMonitor: WorkspaceMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hotKeyManager = HotKeyManager()
+        workspaceMonitor = WorkspaceMonitor()
         AccessibilityPermission.requestIfNeeded()
     }
 }
