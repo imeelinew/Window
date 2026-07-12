@@ -4,13 +4,36 @@ import ApplicationServices
 enum WindowController {
     private static let animationDuration = 0.20
     private static let animationFrameInterval = 1.0 / 60.0
+    private static let finalCommitDelay: UInt64 = 16_000_000
+    private static let finalVerificationDelay: UInt64 = 40_000_000
+    private static let finalCommitAttempts = 3
     private static var animationStates: [WindowAnimationState] = []
     private static var managedMaximizedWindows: [ManagedMaximizedWindow] = []
+    private static var enhancedUILeases: [EnhancedUILease] = []
 
     private struct ManagedMaximizedWindow {
         let window: AXUIElement
+        let animationStrategy: AnimationStrategy
         var lastRequestedFrame: CGRect
         var lastObservedFrame: CGRect
+    }
+
+    private enum AnimationStrategy {
+        case smoothFrame
+        case stableSizeThenPosition
+    }
+
+    private final class EnhancedUILease {
+        let processIdentifier: pid_t
+        let application: AXUIElement
+        let wasEnabled: Bool
+        var count = 1
+
+        init(processIdentifier: pid_t, application: AXUIElement, wasEnabled: Bool) {
+            self.processIdentifier = processIdentifier
+            self.application = application
+            self.wasEnabled = wasEnabled
+        }
     }
 
     private final class WindowAnimationState {
@@ -41,6 +64,7 @@ enum WindowController {
         }
 
         let availableFrame = accessibilityFrame(for: screen)
+        let animationStrategy = animationStrategy(for: application, placement: placement)
         let targetFrame: CGRect
 
         switch placement {
@@ -71,12 +95,22 @@ enum WindowController {
         }
 
         if case .maximize = placement {
-            manageMaximizedWindow(window, currentFrame: currentFrame, targetFrame: targetFrame)
+            manageMaximizedWindow(
+                window,
+                strategy: animationStrategy,
+                currentFrame: currentFrame,
+                targetFrame: targetFrame
+            )
         } else {
             stopManaging(window)
         }
 
-        animate(window: window, from: currentFrame, to: targetFrame)
+        animate(
+            window: window,
+            from: currentFrame,
+            to: targetFrame,
+            strategy: animationStrategy
+        )
     }
 
     static func refreshManagedMaximizedWindow(respectManualChanges: Bool = true) {
@@ -114,7 +148,12 @@ enum WindowController {
                 managedWindow.lastRequestedFrame = targetFrame
                 managedWindow.lastObservedFrame = currentFrame
                 retainedWindows.append(managedWindow)
-                animate(window: managedWindow.window, from: currentFrame, to: targetFrame)
+                animate(
+                    window: managedWindow.window,
+                    from: currentFrame,
+                    to: targetFrame,
+                    strategy: managedWindow.animationStrategy
+                )
             } else {
                 retainedWindows.append(managedWindow)
             }
@@ -125,11 +164,13 @@ enum WindowController {
 
     private static func manageMaximizedWindow(
         _ window: AXUIElement,
+        strategy: AnimationStrategy,
         currentFrame: CGRect,
         targetFrame: CGRect
     ) {
         let managedWindow = ManagedMaximizedWindow(
             window: window,
+            animationStrategy: strategy,
             lastRequestedFrame: targetFrame,
             lastObservedFrame: currentFrame
         )
@@ -259,22 +300,38 @@ enum WindowController {
         )
     }
 
-    private static func animate(window: AXUIElement, from startFrame: CGRect, to targetFrame: CGRect) {
+    private static func animate(
+        window: AXUIElement,
+        from startFrame: CGRect,
+        to targetFrame: CGRect,
+        strategy: AnimationStrategy
+    ) {
         let state = animationState(for: window)
         state.task?.cancel()
         state.generation &+= 1
         let generation = state.generation
 
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              startFrame != targetFrame else {
-            set(frame: targetFrame, of: window)
-            synchronizeManagedFrame(for: window)
-            state.task = nil
-            removeAnimationState(state)
-            return
-        }
-
         state.task = Task { @MainActor in
+            let enhancedUILease = acquireEnhancedUserInterfaceLease(for: window)
+            defer { releaseEnhancedUserInterfaceLease(enhancedUILease) }
+
+            if strategy == .stableSizeThenPosition {
+                await animateStableSizeThenPosition(
+                    window: window,
+                    from: startFrame,
+                    to: targetFrame
+                )
+                finishAnimation(state, generation: generation)
+                return
+            }
+
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                || startFrame == targetFrame {
+                await commit(frame: targetFrame, to: window)
+                finishAnimation(state, generation: generation)
+                return
+            }
+
             let startTime = ProcessInfo.processInfo.systemUptime
             var nextFrameTime = startTime
 
@@ -285,14 +342,13 @@ enum WindowController {
                 let easedProgress = 1 - pow(1 - progress, 3)
 
                 if progress >= 1 {
-                    set(frame: targetFrame, of: window)
+                    await commit(frame: targetFrame, to: window)
                     break
                 }
 
                 set(
                     frame: interpolate(from: startFrame, to: targetFrame, progress: easedProgress),
-                    of: window,
-                    reassertPosition: false
+                    of: window
                 )
 
                 nextFrameTime += animationFrameInterval
@@ -304,10 +360,148 @@ enum WindowController {
                 }
             }
 
-            if generation == state.generation {
-                state.task = nil
-                synchronizeManagedFrame(for: window)
-                removeAnimationState(state)
+            finishAnimation(state, generation: generation)
+        }
+    }
+
+    private static func animateStableSizeThenPosition(
+        window: AXUIElement,
+        from startFrame: CGRect,
+        to targetFrame: CGRect
+    ) async {
+        setSize(targetFrame.size, of: window)
+        try? await Task.sleep(nanoseconds: finalVerificationDelay)
+        guard !Task.isCancelled else { return }
+
+        let actualFrame = frame(of: window) ?? startFrame
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              actualFrame.origin != targetFrame.origin else {
+            await commit(frame: targetFrame, to: window)
+            return
+        }
+
+        let startTime = ProcessInfo.processInfo.systemUptime
+        var nextFrameTime = startTime
+
+        while !Task.isCancelled {
+            let elapsed = ProcessInfo.processInfo.systemUptime - startTime
+            let progress = min(elapsed / animationDuration, 1)
+            let easedProgress = 1 - pow(1 - progress, 3)
+
+            if progress >= 1 { break }
+
+            setPosition(
+                interpolate(
+                    from: actualFrame,
+                    to: targetFrame,
+                    progress: easedProgress
+                ).origin,
+                of: window
+            )
+
+            nextFrameTime += animationFrameInterval
+            let delay = nextFrameTime - ProcessInfo.processInfo.systemUptime
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } else {
+                await Task.yield()
+            }
+        }
+
+        await commit(frame: targetFrame, to: window)
+    }
+
+    private static func animationStrategy(
+        for application: NSRunningApplication,
+        placement: Placement
+    ) -> AnimationStrategy {
+        guard let bundleURL = application.bundleURL,
+              let bundle = Bundle(url: bundleURL),
+              bundle.object(forInfoDictionaryKey: "ElectronAsarIntegrity") != nil else {
+            return .smoothFrame
+        }
+
+        if case .centered = placement {
+            return .stableSizeThenPosition
+        }
+        return .smoothFrame
+    }
+
+    private static func acquireEnhancedUserInterfaceLease(
+        for window: AXUIElement
+    ) -> EnhancedUILease? {
+        var processIdentifier: pid_t = 0
+        guard AXUIElementGetPid(window, &processIdentifier) == .success else { return nil }
+
+        if let lease = enhancedUILeases.first(where: {
+            $0.processIdentifier == processIdentifier
+        }) {
+            lease.count += 1
+            return lease
+        }
+
+        let application = AXUIElementCreateApplication(processIdentifier)
+        let attribute = "AXEnhancedUserInterface" as CFString
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, attribute, &value) == .success else {
+            return nil
+        }
+
+        let wasEnabled = value as? Bool == true
+        if wasEnabled {
+            AXUIElementSetAttributeValue(application, attribute, kCFBooleanFalse)
+        }
+        let lease = EnhancedUILease(
+            processIdentifier: processIdentifier,
+            application: application,
+            wasEnabled: wasEnabled
+        )
+        enhancedUILeases.append(lease)
+        return lease
+    }
+
+    private static func releaseEnhancedUserInterfaceLease(_ lease: EnhancedUILease?) {
+        guard let lease else { return }
+        lease.count -= 1
+        guard lease.count == 0 else { return }
+
+        if lease.wasEnabled {
+            AXUIElementSetAttributeValue(
+                lease.application,
+                "AXEnhancedUserInterface" as CFString,
+                kCFBooleanTrue
+            )
+        }
+        enhancedUILeases.removeAll { $0 === lease }
+    }
+
+    private static func finishAnimation(
+        _ state: WindowAnimationState,
+        generation: Int
+    ) {
+        guard generation == state.generation else { return }
+        state.task = nil
+        synchronizeManagedFrame(for: state.window)
+        removeAnimationState(state)
+    }
+
+    private static func commit(frame targetFrame: CGRect, to window: AXUIElement) async {
+        for _ in 0..<finalCommitAttempts {
+            guard !Task.isCancelled else { return }
+
+            setSize(targetFrame.size, of: window)
+            try? await Task.sleep(nanoseconds: finalCommitDelay)
+            guard !Task.isCancelled else { return }
+
+            setPosition(targetFrame.origin, of: window)
+            try? await Task.sleep(nanoseconds: finalCommitDelay)
+            setSize(targetFrame.size, of: window)
+            try? await Task.sleep(nanoseconds: finalVerificationDelay)
+
+            if let actualFrame = frame(of: window) {
+                if approximatelyEqual(actualFrame, targetFrame, tolerance: 2) {
+                    return
+                }
             }
         }
     }
@@ -371,23 +565,36 @@ enum WindowController {
             && abs(lhs.height - rhs.height) <= tolerance
     }
 
-    private static func set(
-        frame: CGRect,
-        of window: AXUIElement,
-        reassertPosition: Bool = true
-    ) {
-        var position = frame.origin
-        var size = frame.size
-        guard let positionValue = AXValueCreate(.cgPoint, &position),
-              let sizeValue = AXValueCreate(.cgSize, &size) else {
-            return
-        }
-
-        // Moving first prevents the current screen's edge constraints from limiting resizing.
-        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
-        AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
-        if reassertPosition {
-            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
-        }
+    private static func set(frame: CGRect, of window: AXUIElement) {
+        // Size first avoids apps clamping a moved, still-oversized window back onscreen.
+        setSize(frame.size, of: window)
+        setPosition(frame.origin, of: window)
     }
+
+    @discardableResult
+    private static func setPosition(_ position: CGPoint, of window: AXUIElement) -> AXError {
+        var position = position
+        guard let positionValue = AXValueCreate(.cgPoint, &position) else {
+            return .illegalArgument
+        }
+        return AXUIElementSetAttributeValue(
+            window,
+            kAXPositionAttribute as CFString,
+            positionValue
+        )
+    }
+
+    @discardableResult
+    private static func setSize(_ size: CGSize, of window: AXUIElement) -> AXError {
+        var size = size
+        guard let sizeValue = AXValueCreate(.cgSize, &size) else {
+            return .illegalArgument
+        }
+        return AXUIElementSetAttributeValue(
+            window,
+            kAXSizeAttribute as CFString,
+            sizeValue
+        )
+    }
+
 }
