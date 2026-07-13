@@ -6,13 +6,18 @@ enum WindowController {
     private static let animationFrameInterval = 1.0 / 60.0
     private static let finalCommitDelay: UInt64 = 16_000_000
     private static let finalVerificationDelay: UInt64 = 40_000_000
-    private static let finalCommitAttempts = 3
+    private static let finalCommitAttempts = 5
+    private static let edgeAlignmentTolerance: CGFloat = 0.5
+    // AX frames exclude part of the system-drawn bottom shadow. Being one point
+    // short is visually flush; extending past the work area is never accepted.
+    private static let bottomShadowAllowance: CGFloat = 1
     private static var animationStates: [WindowAnimationState] = []
     private static var managedMaximizedWindows: [ManagedMaximizedWindow] = []
     private static var enhancedUILeases: [EnhancedUILease] = []
 
     private struct ManagedMaximizedWindow {
         let window: AXUIElement
+        let processIdentifier: pid_t
         let animationStrategy: AnimationStrategy
         var lastRequestedFrame: CGRect
         var lastObservedFrame: CGRect
@@ -97,6 +102,7 @@ enum WindowController {
         if case .maximize = placement {
             manageMaximizedWindow(
                 window,
+                processIdentifier: application.processIdentifier,
                 strategy: animationStrategy,
                 currentFrame: currentFrame,
                 targetFrame: targetFrame
@@ -113,13 +119,97 @@ enum WindowController {
         )
     }
 
-    static func refreshManagedMaximizedWindow(respectManualChanges: Bool = true) {
+    static var hasManagedMaximizedWindows: Bool {
+        !managedMaximizedWindows.isEmpty
+    }
+
+    static func adoptExistingMaximizedWindows(
+        of processIdentifier: pid_t? = nil
+    ) {
+        guard AXIsProcessTrusted() else { return }
+
+        let applications: [NSRunningApplication]
+        if let processIdentifier,
+           let application = NSRunningApplication(
+            processIdentifier: processIdentifier
+           ) {
+            applications = [application]
+        } else {
+            applications = NSWorkspace.shared.runningApplications.filter {
+                $0.activationPolicy == .regular
+                    && !$0.isTerminated
+                    && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            }
+        }
+
+        for application in applications {
+            let applicationElement = AXUIElementCreateApplication(
+                application.processIdentifier
+            )
+            var windowsValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                applicationElement,
+                kAXWindowsAttribute as CFString,
+                &windowsValue
+            ) == .success,
+                  let windows = windowsValue as? [AXUIElement] else {
+                continue
+            }
+
+            for window in windows where managedWindowIndex(for: window) == nil {
+                guard isStandardUnminimizedWindow(window),
+                      let currentFrame = frame(of: window),
+                      let screen = screen(containing: currentFrame) else {
+                    continue
+                }
+
+                let targetFrame = accessibilityFrame(for: screen)
+                guard resemblesMaximizedWindow(
+                    currentFrame,
+                    targetFrame: targetFrame,
+                    fullFrame: accessibilityFullFrame(for: screen)
+                ) else {
+                    continue
+                }
+
+                let strategy = animationStrategy(
+                    for: application,
+                    placement: .maximize
+                )
+                manageMaximizedWindow(
+                    window,
+                    processIdentifier: application.processIdentifier,
+                    strategy: strategy,
+                    currentFrame: currentFrame,
+                    targetFrame: targetFrame
+                )
+
+                if !visuallyAlignedWithWorkArea(
+                    currentFrame,
+                    targetFrame
+                ) {
+                    animate(
+                        window: window,
+                        from: currentFrame,
+                        to: targetFrame,
+                        strategy: strategy
+                    )
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    static func refreshManagedMaximizedWindow(
+        respectManualChanges: Bool = true
+    ) -> Bool {
         guard AXIsProcessTrusted() else {
             managedMaximizedWindows.removeAll()
-            return
+            return true
         }
 
         var retainedWindows: [ManagedMaximizedWindow] = []
+        var allWindowsSettled = true
 
         for var managedWindow in managedMaximizedWindows {
             guard let currentFrame = frame(of: managedWindow.window),
@@ -128,8 +218,31 @@ enum WindowController {
                 continue
             }
 
+            let targetFrame = accessibilityFrame(for: screen)
+            let targetChanged = !approximatelyEqual(
+                targetFrame,
+                managedWindow.lastRequestedFrame,
+                tolerance: 1
+            )
+            let currentFrameMatchesTarget = visuallyAlignedWithWorkArea(
+                currentFrame,
+                targetFrame
+            )
+            let windowIsAnimating = isAnimating(managedWindow.window)
+
+            if currentFrameMatchesTarget {
+                if targetChanged && windowIsAnimating {
+                    cancelAnimation(for: managedWindow.window)
+                }
+                managedWindow.lastRequestedFrame = targetFrame
+                managedWindow.lastObservedFrame = currentFrame
+                retainedWindows.append(managedWindow)
+                continue
+            }
+
             if respectManualChanges,
-               !isAnimating(managedWindow.window),
+               !windowIsAnimating,
+               !targetChanged,
                !approximatelyEqual(
                    currentFrame,
                    managedWindow.lastObservedFrame,
@@ -139,37 +252,40 @@ enum WindowController {
                 continue
             }
 
-            let targetFrame = accessibilityFrame(for: screen)
-            if !approximatelyEqual(
-                targetFrame,
-                managedWindow.lastRequestedFrame,
-                tolerance: 1
-            ) {
+            allWindowsSettled = false
+            if targetChanged {
                 managedWindow.lastRequestedFrame = targetFrame
-                managedWindow.lastObservedFrame = currentFrame
-                retainedWindows.append(managedWindow)
+            }
+            managedWindow.lastObservedFrame = currentFrame
+            retainedWindows.append(managedWindow)
+
+            // A target application may temporarily reject AX writes while hidden,
+            // changing Spaces, or rebuilding an Electron window. Retry after the
+            // prior animation finishes even when the desired frame is unchanged.
+            if targetChanged || !windowIsAnimating {
                 animate(
                     window: managedWindow.window,
                     from: currentFrame,
                     to: targetFrame,
                     strategy: managedWindow.animationStrategy
                 )
-            } else {
-                retainedWindows.append(managedWindow)
             }
         }
 
         managedMaximizedWindows = retainedWindows
+        return allWindowsSettled
     }
 
     private static func manageMaximizedWindow(
         _ window: AXUIElement,
+        processIdentifier: pid_t,
         strategy: AnimationStrategy,
         currentFrame: CGRect,
         targetFrame: CGRect
     ) {
         let managedWindow = ManagedMaximizedWindow(
             window: window,
+            processIdentifier: processIdentifier,
             animationStrategy: strategy,
             lastRequestedFrame: targetFrame,
             lastObservedFrame: currentFrame
@@ -187,8 +303,67 @@ enum WindowController {
         cancelAnimation(for: window)
     }
 
+    static func stopManagingWindows(of processIdentifier: pid_t) {
+        let windows = managedMaximizedWindows
+            .filter { $0.processIdentifier == processIdentifier }
+            .map(\.window)
+
+        managedMaximizedWindows.removeAll {
+            $0.processIdentifier == processIdentifier
+        }
+        for window in windows {
+            cancelAnimation(for: window)
+        }
+    }
+
     private static func managedWindowIndex(for window: AXUIElement) -> Int? {
         managedMaximizedWindows.firstIndex { CFEqual($0.window, window) }
+    }
+
+    private static func isStandardUnminimizedWindow(_ window: AXUIElement) -> Bool {
+        var subroleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            window,
+            kAXSubroleAttribute as CFString,
+            &subroleValue
+        ) == .success,
+              subroleValue as? String == kAXStandardWindowSubrole else {
+            return false
+        }
+
+        var minimizedValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            window,
+            kAXMinimizedAttribute as CFString,
+            &minimizedValue
+        ) == .success,
+           minimizedValue as? Bool == true {
+            return false
+        }
+        return true
+    }
+
+    private static func resemblesMaximizedWindow(
+        _ frame: CGRect,
+        targetFrame: CGRect,
+        fullFrame: CGRect
+    ) -> Bool {
+        let fixedEdgeTolerance: CGFloat = 4
+        let maximumDockEdgeDrift: CGFloat = 120
+        let dockIsOnLeft = targetFrame.minX - fullFrame.minX > fixedEdgeTolerance
+        let dockIsOnRight = fullFrame.maxX - targetFrame.maxX > fixedEdgeTolerance
+        let dockIsOnBottom = fullFrame.maxY - targetFrame.maxY > fixedEdgeTolerance
+
+        return abs(frame.minY - targetFrame.minY) <= fixedEdgeTolerance
+            && abs(frame.minX - targetFrame.minX) <= (
+                dockIsOnLeft ? maximumDockEdgeDrift : fixedEdgeTolerance
+            )
+            && abs(frame.maxX - targetFrame.maxX) <= (
+                dockIsOnRight ? maximumDockEdgeDrift : fixedEdgeTolerance
+            )
+            && abs(frame.maxY - targetFrame.maxY) <= (
+                dockIsOnBottom ? maximumDockEdgeDrift : fixedEdgeTolerance
+            )
     }
 
     static func hideOtherApplications() {
@@ -486,22 +661,45 @@ enum WindowController {
     }
 
     private static func commit(frame targetFrame: CGRect, to window: AXUIElement) async {
+        var requestedFrame = targetFrame
+
         for _ in 0..<finalCommitAttempts {
             guard !Task.isCancelled else { return }
 
-            setSize(targetFrame.size, of: window)
+            setSize(requestedFrame.size, of: window)
             try? await Task.sleep(nanoseconds: finalCommitDelay)
             guard !Task.isCancelled else { return }
 
-            setPosition(targetFrame.origin, of: window)
+            setPosition(requestedFrame.origin, of: window)
             try? await Task.sleep(nanoseconds: finalCommitDelay)
-            setSize(targetFrame.size, of: window)
+            setSize(requestedFrame.size, of: window)
             try? await Task.sleep(nanoseconds: finalVerificationDelay)
 
             if let actualFrame = frame(of: window) {
-                if approximatelyEqual(actualFrame, targetFrame, tolerance: 2) {
+                if frameIsSettled(
+                    actualFrame,
+                    targetFrame: targetFrame,
+                    window: window
+                ) {
                     return
                 }
+
+                // Some Electron windows consistently apply a one-point smaller
+                // frame than requested. Feed the measured residual into the next
+                // request so the resulting frame, rather than the input value,
+                // lands exactly on the desired work-area edges.
+                requestedFrame = CGRect(
+                    x: requestedFrame.minX + targetFrame.minX - actualFrame.minX,
+                    y: requestedFrame.minY + targetFrame.minY - actualFrame.minY,
+                    width: max(
+                        1,
+                        requestedFrame.width + targetFrame.width - actualFrame.width
+                    ),
+                    height: max(
+                        1,
+                        requestedFrame.height + targetFrame.height - actualFrame.height
+                    )
+                )
             }
         }
     }
@@ -524,6 +722,7 @@ enum WindowController {
         guard let state = animationStates.first(where: { CFEqual($0.window, window) }) else {
             return
         }
+        state.generation &+= 1
         state.task?.cancel()
         state.task = nil
         removeAnimationState(state)
@@ -563,6 +762,34 @@ enum WindowController {
             && abs(lhs.minY - rhs.minY) <= tolerance
             && abs(lhs.width - rhs.width) <= tolerance
             && abs(lhs.height - rhs.height) <= tolerance
+    }
+
+    private static func visuallyAlignedWithWorkArea(
+        _ frame: CGRect,
+        _ workArea: CGRect
+    ) -> Bool {
+        let bottomDelta = frame.maxY - workArea.maxY
+
+        return abs(frame.minX - workArea.minX) <= edgeAlignmentTolerance
+            && abs(frame.minY - workArea.minY) <= edgeAlignmentTolerance
+            && abs(frame.width - workArea.width) <= edgeAlignmentTolerance
+            && bottomDelta <= edgeAlignmentTolerance
+            && bottomDelta >= -bottomShadowAllowance
+    }
+
+    private static func frameIsSettled(
+        _ frame: CGRect,
+        targetFrame: CGRect,
+        window: AXUIElement
+    ) -> Bool {
+        if managedWindowIndex(for: window) != nil {
+            return visuallyAlignedWithWorkArea(frame, targetFrame)
+        }
+        return approximatelyEqual(
+            frame,
+            targetFrame,
+            tolerance: edgeAlignmentTolerance
+        )
     }
 
     private static func set(frame: CGRect, of window: AXUIElement) {
