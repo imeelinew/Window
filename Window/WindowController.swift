@@ -25,7 +25,7 @@ enum WindowController {
 
     private enum AnimationStrategy {
         case smoothFrame
-        case stableSizeThenPosition
+        case stableElectronFrame
     }
 
     private final class EnhancedUILease {
@@ -490,19 +490,19 @@ enum WindowController {
             let enhancedUILease = acquireEnhancedUserInterfaceLease(for: window)
             defer { releaseEnhancedUserInterfaceLease(enhancedUILease) }
 
-            if strategy == .stableSizeThenPosition {
-                await animateStableSizeThenPosition(
-                    window: window,
-                    from: startFrame,
-                    to: targetFrame
-                )
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                || startFrame == targetFrame {
+                await commit(frame: targetFrame, to: window)
                 finishAnimation(state, generation: generation)
                 return
             }
 
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                || startFrame == targetFrame {
-                await commit(frame: targetFrame, to: window)
+            if strategy == .stableElectronFrame {
+                await animateElectronFrame(
+                    window: window,
+                    from: startFrame,
+                    to: targetFrame
+                )
                 finishAnimation(state, generation: generation)
                 return
             }
@@ -539,47 +539,60 @@ enum WindowController {
         }
     }
 
-    private static func animateStableSizeThenPosition(
+    private static func animateElectronFrame(
         window: AXUIElement,
         from startFrame: CGRect,
         to targetFrame: CGRect
     ) async {
+        // Chromium performs a full layout and repaint for every AXSize write.
+        // Some Electron apps block for longer than a display frame, so repeated
+        // size writes queue up and make the animation visibly stutter. Commit the
+        // target size once, then animate the inexpensive position attribute.
         setSize(targetFrame.size, of: window)
         try? await Task.sleep(nanoseconds: finalVerificationDelay)
         guard !Task.isCancelled else { return }
 
         let actualFrame = frame(of: window) ?? startFrame
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              actualFrame.origin != targetFrame.origin else {
+        guard actualFrame.origin != targetFrame.origin else {
             await commit(frame: targetFrame, to: window)
             return
         }
 
         let startTime = ProcessInfo.processInfo.systemUptime
         var nextFrameTime = startTime
+        var lastPosition: CGPoint?
 
         while !Task.isCancelled {
-            let elapsed = ProcessInfo.processInfo.systemUptime - startTime
+            let currentTime = ProcessInfo.processInfo.systemUptime
+            let elapsed = currentTime - startTime
             let progress = min(elapsed / animationDuration, 1)
             let easedProgress = 1 - pow(1 - progress, 3)
 
             if progress >= 1 { break }
 
-            setPosition(
+            let nextPosition = quantizedPoint(
                 interpolate(
                     from: actualFrame,
                     to: targetFrame,
                     progress: easedProgress
-                ).origin,
-                of: window
+                ).origin
             )
 
+            if nextPosition != lastPosition {
+                setPosition(nextPosition, of: window)
+                lastPosition = nextPosition
+            }
+
             nextFrameTime += animationFrameInterval
-            let delay = nextFrameTime - ProcessInfo.processInfo.systemUptime
+            let now = ProcessInfo.processInfo.systemUptime
+            if nextFrameTime <= now {
+                // Never replay stale frames after Electron blocks an AX write.
+                // The next frame is sampled from real elapsed time instead.
+                nextFrameTime = now + animationFrameInterval
+            }
+            let delay = nextFrameTime - now
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            } else {
-                await Task.yield()
             }
         }
 
@@ -588,18 +601,22 @@ enum WindowController {
 
     private static func animationStrategy(
         for application: NSRunningApplication,
-        placement: Placement
+        placement _: Placement
     ) -> AnimationStrategy {
         guard let bundleURL = application.bundleURL,
-              let bundle = Bundle(url: bundleURL),
-              bundle.object(forInfoDictionaryKey: "ElectronAsarIntegrity") != nil else {
+              let bundle = Bundle(url: bundleURL) else {
             return .smoothFrame
         }
 
-        if case .centered = placement {
-            return .stableSizeThenPosition
+        if bundle.object(forInfoDictionaryKey: "ElectronAsarIntegrity") != nil {
+            return .stableElectronFrame
         }
-        return .smoothFrame
+
+        let electronFrameworkURL = bundleURL
+            .appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        return FileManager.default.fileExists(atPath: electronFrameworkURL.path)
+            ? .stableElectronFrame
+            : .smoothFrame
     }
 
     private static func acquireEnhancedUserInterfaceLease(
@@ -750,6 +767,13 @@ enum WindowController {
             y: value(from: start.minY, to: target.minY),
             width: value(from: start.width, to: target.width),
             height: value(from: start.height, to: target.height)
+        )
+    }
+
+    private static func quantizedPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: point.x.rounded(),
+            y: point.y.rounded()
         )
     }
 
