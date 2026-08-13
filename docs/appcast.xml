@@ -3,5 +3,14 @@
     <channel>
         <title>Window Updates</title>
         <language>en</language>
+        <item>
+            <title>0.1.4</title>
+            <pubDate>Thu, 13 Aug 2026 02:36:47 +0000</pubDate>
+            <link>https://github.com/imeelinew/Window</link>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/imeelinew/Window/releases/download/v0.1.4/Window-0.1.4.zip" length="2845311" type="application/octet-stream" sparkle:edSignature="6M1l6S2Wg5FOF3ASmtf9lQ/2gHCQTwACd/ox3yvRywsOJ+n1/A1JF8aJsKkfKHKLJIacS854bEx78pvwqL7tDQ=="/>
+        </item>
     </channel>
 </rss>
