@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.png" width="128" height="128" alt="Window">
+</p>
+
 <h1 align="center">Window</h1>
 
 <p align="center">
