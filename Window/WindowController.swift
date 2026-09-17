@@ -53,8 +53,6 @@ enum WindowController {
 
     enum Placement {
         case maximize
-        case leftHalf
-        case rightHalf
         case centered(width: CGFloat, height: CGFloat)
     }
 
@@ -75,21 +73,6 @@ enum WindowController {
         switch placement {
         case .maximize:
             targetFrame = availableFrame
-        case .leftHalf:
-            targetFrame = CGRect(
-                x: availableFrame.minX,
-                y: availableFrame.minY,
-                width: floor(availableFrame.width / 2),
-                height: availableFrame.height
-            )
-        case .rightHalf:
-            let leftWidth = floor(availableFrame.width / 2)
-            targetFrame = CGRect(
-                x: availableFrame.minX + leftWidth,
-                y: availableFrame.minY,
-                width: availableFrame.width - leftWidth,
-                height: availableFrame.height
-            )
         case let .centered(width, height):
             targetFrame = CGRect(
                 x: (availableFrame.midX - width / 2).rounded(),
@@ -364,43 +347,6 @@ enum WindowController {
             && abs(frame.maxY - targetFrame.maxY) <= (
                 dockIsOnBottom ? maximumDockEdgeDrift : fixedEdgeTolerance
             )
-    }
-
-    static func hideOtherApplications() {
-        guard let current = NSWorkspace.shared.frontmostApplication else { return }
-
-        minimizeOtherWindows(of: current.processIdentifier)
-
-        for application in NSWorkspace.shared.runningApplications
-        where application.activationPolicy == .regular && application != current {
-            application.hide()
-        }
-    }
-
-    private static func minimizeOtherWindows(of processIdentifier: pid_t) {
-        guard AXIsProcessTrusted(),
-              let focusedWindow = focusedWindow(of: processIdentifier) else {
-            return
-        }
-
-        let application = AXUIElementCreateApplication(processIdentifier)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            application,
-            kAXWindowsAttribute as CFString,
-            &value
-        ) == .success,
-              let windows = value as? [AXUIElement] else {
-            return
-        }
-
-        for window in windows where !CFEqual(window, focusedWindow) {
-            AXUIElementSetAttributeValue(
-                window,
-                kAXMinimizedAttribute as CFString,
-                kCFBooleanTrue
-            )
-        }
     }
 
     private static func focusedWindow(of processIdentifier: pid_t) -> AXUIElement? {

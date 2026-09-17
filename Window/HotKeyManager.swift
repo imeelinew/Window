@@ -4,25 +4,12 @@ import Carbon.HIToolbox
 final class HotKeyManager {
     private enum Action: UInt32, CaseIterable {
         case maximize = 1
-        case leftHalf
-        case rightHalf
         case centeredSize
-        case hideOthers
 
         var keyCode: UInt32 {
             switch self {
             case .maximize: return UInt32(kVK_UpArrow)
-            case .leftHalf: return UInt32(kVK_LeftArrow)
-            case .rightHalf: return UInt32(kVK_RightArrow)
             case .centeredSize: return UInt32(kVK_DownArrow)
-            case .hideOthers: return UInt32(kVK_DownArrow)
-            }
-        }
-
-        var modifiers: UInt32 {
-            switch self {
-            case .hideOthers: return UInt32(cmdKey | optionKey)
-            default: return UInt32(cmdKey)
             }
         }
     }
@@ -89,7 +76,7 @@ final class HotKeyManager {
             let identifier = EventHotKeyID(signature: Self.signature, id: action.rawValue)
             let status = RegisterEventHotKey(
                 action.keyCode,
-                action.modifiers,
+                UInt32(cmdKey),
                 identifier,
                 GetApplicationEventTarget(),
                 0,
@@ -105,14 +92,8 @@ final class HotKeyManager {
         switch action {
         case .maximize:
             WindowController.moveFocusedWindow(to: .maximize)
-        case .leftHalf:
-            WindowController.moveFocusedWindow(to: .leftHalf)
-        case .rightHalf:
-            WindowController.moveFocusedWindow(to: .rightHalf)
         case .centeredSize:
             WindowController.moveFocusedWindow(to: .centered(width: 998, height: 836))
-        case .hideOthers:
-            WindowController.hideOtherApplications()
         }
     }
 }
