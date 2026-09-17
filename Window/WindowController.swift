@@ -53,6 +53,8 @@ enum WindowController {
 
     enum Placement {
         case maximize
+        case leftHalf
+        case rightHalf
         case centered(width: CGFloat, height: CGFloat)
     }
 
@@ -73,6 +75,21 @@ enum WindowController {
         switch placement {
         case .maximize:
             targetFrame = availableFrame
+        case .leftHalf:
+            targetFrame = CGRect(
+                x: availableFrame.minX,
+                y: availableFrame.minY,
+                width: floor(availableFrame.width / 2),
+                height: availableFrame.height
+            )
+        case .rightHalf:
+            let leftWidth = floor(availableFrame.width / 2)
+            targetFrame = CGRect(
+                x: availableFrame.minX + leftWidth,
+                y: availableFrame.minY,
+                width: availableFrame.width - leftWidth,
+                height: availableFrame.height
+            )
         case let .centered(width, height):
             targetFrame = CGRect(
                 x: (availableFrame.midX - width / 2).rounded(),

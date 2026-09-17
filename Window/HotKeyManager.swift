@@ -4,11 +4,15 @@ import Carbon.HIToolbox
 final class HotKeyManager {
     private enum Action: UInt32, CaseIterable {
         case maximize = 1
+        case leftHalf
+        case rightHalf
         case centeredSize
 
         var keyCode: UInt32 {
             switch self {
             case .maximize: return UInt32(kVK_UpArrow)
+            case .leftHalf: return UInt32(kVK_LeftArrow)
+            case .rightHalf: return UInt32(kVK_RightArrow)
             case .centeredSize: return UInt32(kVK_DownArrow)
             }
         }
@@ -92,6 +96,10 @@ final class HotKeyManager {
         switch action {
         case .maximize:
             WindowController.moveFocusedWindow(to: .maximize)
+        case .leftHalf:
+            WindowController.moveFocusedWindow(to: .leftHalf)
+        case .rightHalf:
+            WindowController.moveFocusedWindow(to: .rightHalf)
         case .centeredSize:
             WindowController.moveFocusedWindow(to: .centered(width: 998, height: 836))
         }
