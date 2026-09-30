@@ -1,52 +1,6 @@
 import AppKit
 import ApplicationServices
-
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var hotKeyManager: HotKeyManager?
-    private var workspaceMonitor: WorkspaceMonitor?
-    private var updateService: UpdateService?
-    private var checkForUpdatesItem: NSMenuItem?
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        hotKeyManager = HotKeyManager()
-        workspaceMonitor = WorkspaceMonitor()
-        updateService = UpdateService()
-        installUpdateMenu()
-        AccessibilityPermission.requestIfNeeded()
-    }
-
-    private func installUpdateMenu() {
-        let checkItem = NSMenuItem(
-            title: "Check for Updates…",
-            action: #selector(checkForUpdates),
-            keyEquivalent: ""
-        )
-        checkItem.target = self
-        checkForUpdatesItem = checkItem
-
-        let appMenu = NSMenu()
-        appMenu.addItem(checkItem)
-        let appMenuItem = NSMenuItem()
-        appMenuItem.submenu = appMenu
-
-        let mainMenu = NSMenu()
-        mainMenu.addItem(appMenuItem)
-        NSApp.mainMenu = mainMenu
-    }
-
-    @objc private func checkForUpdates() {
-        updateService?.checkForUpdates()
-    }
-}
-
-extension AppDelegate: NSMenuItemValidation {
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(checkForUpdates) {
-            return updateService?.canCheckForUpdates == true
-        }
-        return true
-    }
-}
+import Sparkle
 
 @main
 enum WindowApp {
@@ -55,17 +9,43 @@ enum WindowApp {
         let delegate = AppDelegate()
         application.delegate = delegate
         application.setActivationPolicy(.accessory)
-        application.run()
+        withExtendedLifetime(delegate) { application.run() }
     }
 }
 
-private enum AccessibilityPermission {
-    static func requestIfNeeded() {
-        guard !AXIsProcessTrusted() else { return }
+private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+    private let windows = WindowController()
+    private var hotKeys: HotKeyManager?
+    private var workspace: WorkspaceMonitor?
+    private var updater: SPUStandardUpdaterController?
 
-        let options = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if !AXIsProcessTrusted() {
+            AXIsProcessTrustedWithOptions([
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ] as CFDictionary)
+        }
+        hotKeys = HotKeyManager(windows: windows)
+        workspace = WorkspaceMonitor(windows: windows)
+        updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+
+        let item = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        item.target = self
+        let appMenu = NSMenu()
+        appMenu.addItem(item)
+        let appItem = NSMenuItem()
+        appItem.submenu = appMenu
+        let menu = NSMenu()
+        menu.addItem(appItem)
+        NSApp.mainMenu = menu
+    }
+
+    @objc private func checkForUpdates() {
+        guard updater?.updater.canCheckForUpdates == true else { return }
+        updater?.checkForUpdates(nil)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action != #selector(checkForUpdates) || updater?.updater.canCheckForUpdates == true
     }
 }

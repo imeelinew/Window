@@ -2,347 +2,177 @@ import AppKit
 import ApplicationServices
 
 final class WorkspaceMonitor: NSObject {
-    private static let dockBundleIdentifier = "com.apple.dock"
-    private static let settlingInterval: UInt64 = 100_000_000
-    private static let maximumSettlingSamples = 30
-    private static let requiredStableSamples = 4
-
-    private enum SettlingMode {
-        case waitForScreenLayoutChange
-        case reconcileManagedWindows
-    }
-
-    private struct ScreenLayout: Equatable {
-        private struct ScreenState: Equatable {
-            let displayIdentifier: UInt32
-            let frame: CGRect
-            let visibleFrame: CGRect
-        }
-
-        private let screens: [ScreenState]
-
-        static var current: ScreenLayout {
-            let states = NSScreen.screens.enumerated().map { index, screen in
-                let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
-                let displayIdentifier = (
-                    screen.deviceDescription[screenNumberKey] as? NSNumber
-                )?.uint32Value ?? UInt32(index)
-
-                return ScreenState(
-                    displayIdentifier: displayIdentifier,
-                    frame: screen.frame,
-                    visibleFrame: screen.visibleFrame
-                )
-            }
-            .sorted { $0.displayIdentifier < $1.displayIdentifier }
-
-            return ScreenLayout(screens: states)
-        }
-    }
-
-    private var refreshTask: Task<Void, Never>?
+    private static let dockIdentifier = "com.apple.dock"
+    private let windows: WindowController
+    private var layout = ScreenArea.current
+    private var settlingTask: Task<Void, Never>?
     private var dockConnectionTask: Task<Void, Never>?
-    private var lastScreenLayout = ScreenLayout.current
     private var dockObserver: AXObserver?
-    private var observedDockItems: [AXUIElement] = []
+    private var dockItems: [AXUIElement] = []
 
-    override init() {
+    init(windows: WindowController) {
+        self.windows = windows
         super.init()
-
         NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screenParametersDidChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
+            self, selector: #selector(screenChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil
         )
-
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-        workspaceCenter.addObserver(
-            self,
-            selector: #selector(workspaceApplicationsDidChange),
-            name: NSWorkspace.didLaunchApplicationNotification,
-            object: nil
-        )
-        workspaceCenter.addObserver(
-            self,
-            selector: #selector(workspaceApplicationsDidChange),
-            name: NSWorkspace.didTerminateApplicationNotification,
-            object: nil
-        )
-        workspaceCenter.addObserver(
-            self,
-            selector: #selector(managedApplicationBecameAvailable),
-            name: NSWorkspace.didActivateApplicationNotification,
-            object: nil
-        )
-        workspaceCenter.addObserver(
-            self,
-            selector: #selector(managedApplicationBecameAvailable),
-            name: NSWorkspace.didUnhideApplicationNotification,
-            object: nil
-        )
-
-        reconnectToDock()
-        WindowController.adoptExistingMaximizedWindows()
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didActivateApplicationNotification,
+                     NSWorkspace.didUnhideApplicationNotification] {
+            center.addObserver(self, selector: #selector(applicationChanged), name: name, object: nil)
+        }
+        ensureDockConnection()
+        windows.adoptMaximizedWindows()
     }
 
     deinit {
-        refreshTask?.cancel()
+        settlingTask?.cancel()
         dockConnectionTask?.cancel()
-        disconnectFromDock()
+        if let dockObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(dockObserver), .commonModes)
+        }
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
-    @objc private func screenParametersDidChange(_ notification: Notification) {
+    @objc private func screenChanged(_ notification: Notification) {
         ensureDockConnection()
-        WindowController.adoptExistingMaximizedWindows()
-        let currentLayout = ScreenLayout.current
-        let layoutChanged = currentLayout != lastScreenLayout
-
-        if layoutChanged {
-            lastScreenLayout = currentLayout
-            WindowController.refreshManagedMaximizedWindow(respectManualChanges: false)
-        }
-
-        scheduleSettlingRefreshes(
-            mode: layoutChanged ? .reconcileManagedWindows : .waitForScreenLayoutChange,
-            environmentalChangeAlreadyObserved: layoutChanged
-        )
+        windows.adoptMaximizedWindows()
+        let changed = updateLayout()
+        if changed { windows.reconcileMaximizedWindows(respectManualChanges: false) }
+        settle(reconcile: changed, environmentChanged: changed)
     }
 
-    @objc private func workspaceApplicationsDidChange(_ notification: Notification) {
-        let application = notification.userInfo?[
-            NSWorkspace.applicationUserInfoKey
-        ] as? NSRunningApplication
-
-        if notification.name == NSWorkspace.didTerminateApplicationNotification,
-           let application {
-            WindowController.stopManagingWindows(of: application.processIdentifier)
+    @objc private func applicationChanged(_ notification: Notification) {
+        let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        let terminated = notification.name == NSWorkspace.didTerminateApplicationNotification
+        if terminated, let application { windows.removeWindows(of: application.processIdentifier) }
+        if application?.bundleIdentifier == Self.dockIdentifier {
+            disconnectDock()
         }
-
-        if application?.bundleIdentifier == Self.dockBundleIdentifier {
-            reconnectToDock()
-        } else {
-            ensureDockConnection()
-        }
-
-        WindowController.adoptExistingMaximizedWindows()
-        // An app appearing or disappearing can add or remove a Dock tile. Wait for
-        // NSScreen.visibleFrame to actually change before touching managed windows.
-        scheduleSettlingRefreshes(mode: .waitForScreenLayoutChange)
-    }
-
-    @objc private func managedApplicationBecameAvailable(_ notification: Notification) {
         ensureDockConnection()
-        let application = notification.userInfo?[
-            NSWorkspace.applicationUserInfoKey
-        ] as? NSRunningApplication
-        WindowController.adoptExistingMaximizedWindows(
-            of: application?.processIdentifier
-        )
-        guard WindowController.hasManagedMaximizedWindows else { return }
 
-        // A hidden or off-Space window can temporarily reject AX frame writes.
-        // Activation/unhide is a bounded opportunity to finish a prior request.
-        scheduleSettlingRefreshes(mode: .reconcileManagedWindows)
+        let becameAvailable = notification.name == NSWorkspace.didActivateApplicationNotification
+            || notification.name == NSWorkspace.didUnhideApplicationNotification
+        windows.adoptMaximizedWindows(of: becameAvailable ? application?.processIdentifier : nil)
+        settle(reconcile: becameAvailable)
     }
 
-    private func scheduleSettlingRefreshes(
-        mode: SettlingMode,
-        environmentalChangeAlreadyObserved: Bool = false
-    ) {
-        refreshTask?.cancel()
-        guard WindowController.hasManagedMaximizedWindows else {
-            refreshTask = nil
-            return
-        }
+    private func updateLayout() -> Bool {
+        let current = ScreenArea.current
+        guard current != layout else { return false }
+        layout = current
+        return true
+    }
 
-        refreshTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            var shouldReconcile = mode == .reconcileManagedWindows
-            var environmentalChangeObserved = environmentalChangeAlreadyObserved
+    private func settle(reconcile: Bool, environmentChanged: Bool = false) {
+        settlingTask?.cancel()
+        settlingTask = nil
+        guard windows.hasMaximizedWindows else { return }
+        // Dock notifications precede the animation. Sample only for this event,
+        // for at most three seconds, then release the task completely.
+        settlingTask = Task { @MainActor [weak self] in
+            var shouldReconcile = reconcile
+            var changed = environmentChanged
             var stableSamples = 0
-
-            for _ in 0..<Self.maximumSettlingSamples {
+            for _ in 0..<30 {
                 guard !Task.isCancelled else { return }
-
-                let currentLayout = ScreenLayout.current
-                if currentLayout != lastScreenLayout {
-                    lastScreenLayout = currentLayout
+                guard let self else { return }
+                if updateLayout() {
                     shouldReconcile = true
-                    environmentalChangeObserved = true
+                    changed = true
                     stableSamples = 0
-                    WindowController.adoptExistingMaximizedWindows()
+                    windows.adoptMaximizedWindows()
                 } else if shouldReconcile {
                     stableSamples += 1
                 }
-
-                if shouldReconcile {
-                    let allWindowsSettled = WindowController.refreshManagedMaximizedWindow(
-                        respectManualChanges: !environmentalChangeObserved
-                    )
-
-                    if allWindowsSettled,
-                       stableSamples >= Self.requiredStableSamples {
-                        return
-                    }
-                }
-
-                try? await Task.sleep(nanoseconds: Self.settlingInterval)
-            }
-        }
-    }
-
-    private func reconnectToDock() {
-        dockConnectionTask?.cancel()
-        disconnectFromDock()
-
-        dockConnectionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            for _ in 0..<10 {
-                guard !Task.isCancelled else { return }
-                if connectToDock() {
-                    dockConnectionTask = nil
+                if shouldReconcile,
+                   windows.reconcileMaximizedWindows(respectManualChanges: !changed),
+                   stableSamples >= 4 {
+                    settlingTask = nil
                     return
                 }
-                try? await Task.sleep(nanoseconds: Self.settlingInterval)
+                do { try await Task.sleep(nanoseconds: 100_000_000) }
+                catch { return }
             }
-            dockConnectionTask = nil
+            self?.settlingTask = nil
         }
     }
 
     private func ensureDockConnection() {
-        guard dockObserver == nil, dockConnectionTask == nil else { return }
-        reconnectToDock()
+        guard dockObserver == nil, dockConnectionTask == nil, AXIsProcessTrusted() else { return }
+        if connectDock() { return }
+        dockConnectionTask = Task { @MainActor [weak self] in
+            for _ in 0..<10 {
+                do { try await Task.sleep(nanoseconds: 100_000_000) }
+                catch { return }
+                guard !Task.isCancelled, let self else { return }
+                if connectDock() {
+                    dockConnectionTask = nil
+                    return
+                }
+            }
+            self?.dockConnectionTask = nil
+        }
     }
 
-    private func connectToDock() -> Bool {
+    private func connectDock() -> Bool {
         guard AXIsProcessTrusted(),
-              let dock = NSRunningApplication.runningApplications(
-                withBundleIdentifier: Self.dockBundleIdentifier
-              ).first else {
+              let dock = NSRunningApplication.runningApplications(withBundleIdentifier: Self.dockIdentifier).first else {
             return false
         }
-
-        let dockApplication = AXUIElementCreateApplication(dock.processIdentifier)
-        var childrenValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            dockApplication,
-            kAXChildrenAttribute as CFString,
-            &childrenValue
-        ) == .success,
-              let dockList = (childrenValue as? [AXUIElement])?.first else {
-            return false
-        }
-
-        var observer: AXObserver?
-        guard AXObserverCreate(
-            dock.processIdentifier,
-            Self.dockObserverCallback,
-            &observer
-        ) == .success,
-              let observer else {
-            return false
-        }
-
-        dockObserver = observer
+        let application = AXUIElementCreateApplication(dock.processIdentifier)
+        guard let list = (application.attribute(kAXChildrenAttribute) as? [AXUIElement])?.first else { return false }
+        var reference: AXObserver?
+        guard AXObserverCreate(dock.processIdentifier, Self.dockCallback, &reference) == .success,
+              let observer = reference else { return false }
         let context = Unmanaged.passUnretained(self).toOpaque()
-
-        for element in [dockApplication, dockList] {
-            AXObserverAddNotification(
-                observer,
-                element,
-                kAXCreatedNotification as CFString,
-                context
-            )
-        }
-
-        var dockItemsValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(
-            dockList,
-            kAXChildrenAttribute as CFString,
-            &dockItemsValue
-        ) == .success,
-           let dockItems = dockItemsValue as? [AXUIElement] {
-            for dockItem in dockItems {
-                observeDockItemDestruction(dockItem, context: context)
+        var observingCreation = false
+        for element in [application, list] {
+            if AXObserverAddNotification(observer, element, kAXCreatedNotification as CFString, context) == .success {
+                observingCreation = true
             }
         }
-
-        CFRunLoopAddSource(
-            CFRunLoopGetMain(),
-            AXObserverGetRunLoopSource(observer),
-            .commonModes
-        )
+        guard observingCreation else { return false }
+        dockObserver = observer
+        for item in list.attribute(kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+            observeDestruction(of: item)
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         return true
     }
 
-    private func disconnectFromDock() {
-        guard let dockObserver else {
-            observedDockItems.removeAll()
-            return
+    private func disconnectDock() {
+        dockConnectionTask?.cancel()
+        dockConnectionTask = nil
+        if let dockObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(dockObserver), .commonModes)
         }
-
-        CFRunLoopRemoveSource(
-            CFRunLoopGetMain(),
-            AXObserverGetRunLoopSource(dockObserver),
-            .commonModes
-        )
-        self.dockObserver = nil
-        observedDockItems.removeAll()
+        dockObserver = nil
+        dockItems.removeAll()
     }
 
-    private func observeDockItemDestruction(
-        _ dockItem: AXUIElement,
-        context: UnsafeMutableRawPointer
-    ) {
-        guard let dockObserver,
-              !observedDockItems.contains(where: { CFEqual($0, dockItem) }) else {
-            return
-        }
-
+    private func observeDestruction(of item: AXUIElement) {
+        guard let dockObserver, !dockItems.contains(where: { CFEqual($0, item) }) else { return }
         let result = AXObserverAddNotification(
-            dockObserver,
-            dockItem,
-            kAXUIElementDestroyedNotification as CFString,
-            context
+            dockObserver, item, kAXUIElementDestroyedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
         )
-        if result == .success || result == .notificationAlreadyRegistered {
-            observedDockItems.append(dockItem)
-        }
+        if result == .success || result == .notificationAlreadyRegistered { dockItems.append(item) }
     }
 
-    private func dockAccessibilityDidChange(
-        element: AXUIElement,
-        notification: CFString,
-        context: UnsafeMutableRawPointer
-    ) {
-        if notification == kAXCreatedNotification as CFString {
-            observeDockItemDestruction(element, context: context)
-        } else if notification == kAXUIElementDestroyedNotification as CFString {
-            observedDockItems.removeAll { CFEqual($0, element) }
-        }
-
-        // AX fires at the start of the Dock animation. The bounded settling task
-        // waits until visibleFrame reports the new work area, then verifies it.
-        WindowController.adoptExistingMaximizedWindows()
-        scheduleSettlingRefreshes(mode: .waitForScreenLayoutChange)
-    }
-
-    private static let dockObserverCallback: AXObserverCallback = {
-        _, element, notification, context in
+    private static let dockCallback: AXObserverCallback = { _, element, notification, context in
         guard let context else { return }
-
-        let monitor = Unmanaged<WorkspaceMonitor>
-            .fromOpaque(context)
-            .takeUnretainedValue()
-        monitor.dockAccessibilityDidChange(
-            element: element,
-            notification: notification,
-            context: context
-        )
+        let monitor = Unmanaged<WorkspaceMonitor>.fromOpaque(context).takeUnretainedValue()
+        if notification == kAXCreatedNotification as CFString {
+            monitor.observeDestruction(of: element)
+        } else if notification == kAXUIElementDestroyedNotification as CFString {
+            monitor.dockItems.removeAll { CFEqual($0, element) }
+        }
+        monitor.windows.adoptMaximizedWindows()
+        monitor.settle(reconcile: false)
     }
 }

@@ -6,7 +6,7 @@
 
 <p align="center">
   A lightweight native macOS window manager that stays in the background.<br>
-  No main window, Dock icon, or menu bar icon — global hotkeys handle maximize, halves, centering, and workspace cleanup.
+  No main window, Dock icon, or menu bar icon — global hotkeys handle maximize, halves, and centering.
 </p>
 
 <p align="center">
@@ -55,9 +55,14 @@ Window exists to keep those windows flush: hotkeys snap the focused window into 
 | `Command + ←` | Place the focused window on the left half |
 | `Command + →` | Place the focused window on the right half |
 | `Command + ↓` | Resize the focused window to 998 × 836 and center it in the available area |
-| `Command + Option + ↓` | Keep the focused window, hide other apps, and minimize the current app’s other windows |
+| `Option + Command + ←` | Decrease width by up to 50 points, keeping the window center fixed |
+| `Option + Command + →` | Increase width by up to 50 points, keeping the window center fixed |
+| `Option + Command + ↑` | Increase height by up to 50 points, keeping the window center fixed |
+| `Option + Command + ↓` | Decrease height by up to 50 points, keeping the window center fixed |
 
 Left and right halves tile the full work area with no gap between them.
+
+Resizing expands or contracts symmetrically. Expansion stops at the work-area boundary; shrinking respects the app’s minimum size. Full-screen, minimized, or non-resizable windows ignore these four shortcuts.
 
 ## Behavior
 
@@ -91,6 +96,18 @@ open Window.xcodeproj
 ```
 
 Select the **Window** scheme and choose **Product → Run**. Grant Accessibility permission when prompted before using the hotkeys.
+
+To build Release, install it to `/Applications/Window.app`, and restart the app:
+
+```bash
+./scripts/install.sh
+```
+
+Run geometry regression checks without launching the app or requiring Accessibility permission:
+
+```bash
+./Tests/run.sh
+```
 
 ## License
 
