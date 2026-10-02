@@ -47,8 +47,9 @@ final class WindowController {
         animate(window, state: state, from: frame, to: placement.frame(in: screen.workArea))
     }
 
-    func resizeFocusedWindow(_ axis: WindowResize, by amount: CGFloat) {
-        guard let (application, window, frame, screen) = focusedWindow(), window.canResize else { return }
+    @discardableResult
+    func resizeFocusedWindow(_ axis: WindowResize, by amount: CGFloat) -> Bool {
+        guard let (application, window, frame, screen) = focusedWindow(), window.canResize else { return false }
         let existing = windows[window]
         // Each press adjusts the latest request, even before the prior write settles.
         let base: CGRect
@@ -57,12 +58,13 @@ final class WindowController {
         } else {
             base = frame
         }
-        guard let target = axis.frame(from: base, in: screen.workArea, by: amount) else { return }
+        guard let target = axis.frame(from: base, in: screen.workArea, by: amount) else { return false }
         let state = existing ?? State(application, frame: frame)
         windows[window] = state
         state.maximized = false
         state.observed = frame
         animate(window, state: state, from: frame, to: target, centeredResize: true)
+        return true
     }
 
     private func focusedWindow() -> (NSRunningApplication, AccessibleWindow, CGRect, ScreenArea)? {

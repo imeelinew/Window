@@ -1,5 +1,5 @@
 import Carbon.HIToolbox
-import Foundation
+import AppKit
 
 final class HotKeyManager {
     private enum Shortcut: UInt32, CaseIterable {
@@ -28,17 +28,33 @@ final class HotKeyManager {
             }
         }
 
-        func perform(using windows: WindowController) {
+        var repeatsWhileHeld: Bool {
+            switch self {
+            case .increaseWidth, .increaseHeight, .decreaseWidth, .decreaseHeight: true
+            default: false
+            }
+        }
+
+        var isHeld: Bool {
+            let modifiers = CGEventSource.flagsState(.combinedSessionState)
+                .intersection([.maskCommand, .maskAlternate, .maskShift, .maskControl])
+            return modifiers == [.maskCommand, .maskAlternate]
+                && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
+        }
+
+        @discardableResult
+        func perform(using windows: WindowController) -> Bool {
             switch self {
             case .maximize: windows.moveFocusedWindow(to: .maximize)
             case .leftHalf: windows.moveFocusedWindow(to: .leftHalf)
             case .rightHalf: windows.moveFocusedWindow(to: .rightHalf)
             case .centered: windows.moveFocusedWindow(to: .centered)
-            case .increaseWidth: windows.resizeFocusedWindow(.width, by: 50)
-            case .increaseHeight: windows.resizeFocusedWindow(.height, by: 50)
-            case .decreaseWidth: windows.resizeFocusedWindow(.width, by: -50)
-            case .decreaseHeight: windows.resizeFocusedWindow(.height, by: -50)
+            case .increaseWidth: return windows.resizeFocusedWindow(.width, by: 50)
+            case .increaseHeight: return windows.resizeFocusedWindow(.height, by: 50)
+            case .decreaseWidth: return windows.resizeFocusedWindow(.width, by: -50)
+            case .decreaseHeight: return windows.resizeFocusedWindow(.height, by: -50)
             }
+            return false
         }
     }
 
@@ -46,14 +62,20 @@ final class HotKeyManager {
     private let windows: WindowController
     private var hotKeys: [EventHotKeyRef] = []
     private var handler: EventHandlerRef?
+    private var heldShortcut: Shortcut?
+    private var repeatTask: Task<Void, Never>?
 
     init(windows: WindowController) {
         self.windows = windows
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let status = InstallEventHandler(
-            GetApplicationEventTarget(), Self.handleEvent, 1, &eventType,
-            Unmanaged.passUnretained(self).toOpaque(), &handler
-        )
+        let eventTypes = [kEventHotKeyPressed, kEventHotKeyReleased].map {
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32($0))
+        }
+        let status = eventTypes.withUnsafeBufferPointer { types in
+            InstallEventHandler(
+                GetApplicationEventTarget(), Self.handleEvent, types.count, types.baseAddress,
+                Unmanaged.passUnretained(self).toOpaque(), &handler
+            )
+        }
         guard status == noErr else {
             NSLog("Window: could not install hotkey handler (%d)", status)
             return
@@ -74,8 +96,34 @@ final class HotKeyManager {
     }
 
     deinit {
+        repeatTask?.cancel()
         for hotKey in hotKeys { UnregisterEventHotKey(hotKey) }
         if let handler { RemoveEventHandler(handler) }
+    }
+
+    private func pressed(_ shortcut: Shortcut) {
+        guard heldShortcut != shortcut else { return }
+        stopRepeating()
+        guard shortcut.perform(using: windows), shortcut.repeatsWhileHeld else { return }
+        heldShortcut = shortcut
+        repeatTask = KeyRepeat.start(every: 0.1) { [weak self] in
+            self?.repeatHeldShortcut(shortcut) == true
+        }
+    }
+
+    private func repeatHeldShortcut(_ shortcut: Shortcut) -> Bool {
+        guard heldShortcut == shortcut, shortcut.isHeld,
+              shortcut.perform(using: windows) else {
+            stopRepeating()
+            return false
+        }
+        return true
+    }
+
+    private func stopRepeating() {
+        repeatTask?.cancel()
+        repeatTask = nil
+        heldShortcut = nil
     }
 
     private static let handleEvent: EventHandlerUPP = { _, event, context in
@@ -91,7 +139,11 @@ final class HotKeyManager {
             return OSStatus(eventNotHandledErr)
         }
         let manager = Unmanaged<HotKeyManager>.fromOpaque(context).takeUnretainedValue()
-        shortcut.perform(using: manager.windows)
+        if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+            if manager.heldShortcut == shortcut { manager.stopRepeating() }
+        } else {
+            manager.pressed(shortcut)
+        }
         return noErr
     }
 }

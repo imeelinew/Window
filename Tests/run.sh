@@ -7,3 +7,7 @@ xcrun swiftc -swift-version 5 -default-isolation MainActor -warnings-as-errors -
     "$root/Window/WindowGeometry.swift" "$root/Tests/WindowGeometryTests.swift" \
     -o "$work/WindowGeometryTests"
 "$work/WindowGeometryTests"
+xcrun swiftc -swift-version 5 -default-isolation MainActor -warnings-as-errors -parse-as-library \
+    "$root/Window/KeyRepeat.swift" "$root/Tests/KeyRepeatTests.swift" \
+    -o "$work/KeyRepeatTests"
+"$work/KeyRepeatTests"

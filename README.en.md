@@ -64,6 +64,8 @@ Left and right halves tile the full work area with no gap between them.
 
 Resizing expands or contracts symmetrically. Expansion stops at the work-area boundary; shrinking respects the app’s minimum size. Full-screen, minimized, or non-resizable windows ignore these four shortcuts.
 
+Hold any of these four resize shortcuts to keep resizing. Pressing adjusts once immediately, then repeats every 100 milliseconds while held. Releasing the arrow or modifier keys stops repetition. There is no extra hold delay and no repeat task while idle.
+
 ## Behavior
 
 - Only the frontmost app’s focused window is moved; Window never operates on itself.

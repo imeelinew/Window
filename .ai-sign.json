@@ -1,0 +1,19 @@
+{
+  "app": "DerivedData/Build/Products/Release/Window.app",
+  "bundle_id": "com.eli.Window",
+  "build": [
+    "xcodebuild",
+    "-project",
+    "Window.xcodeproj",
+    "-scheme",
+    "Window",
+    "-configuration",
+    "Release",
+    "-destination",
+    "generic/platform=macOS",
+    "-derivedDataPath",
+    "DerivedData",
+    "build"
+  ],
+  "output": "/Applications/Window.app"
+}
