@@ -55,10 +55,10 @@ Window exists to keep those windows flush: hotkeys snap the focused window into 
 | `Command + ←` | Place the focused window on the left half |
 | `Command + →` | Place the focused window on the right half |
 | `Command + ↓` | Resize the focused window to 998 × 836 and center it in the available area |
-| `Option + Command + ←` | Decrease width by up to 50 points, keeping the window center fixed |
-| `Option + Command + →` | Increase width by up to 50 points, keeping the window center fixed |
-| `Option + Command + ↑` | Increase height by up to 50 points, keeping the window center fixed |
-| `Option + Command + ↓` | Decrease height by up to 50 points, keeping the window center fixed |
+| `Option + Command + ←` | Decrease width smoothly, keeping the window center fixed |
+| `Option + Command + →` | Increase width smoothly, keeping the window center fixed |
+| `Option + Command + ↑` | Increase height smoothly, keeping the window center fixed |
+| `Option + Command + ↓` | Decrease height smoothly, keeping the window center fixed |
 | `Control + Option + ←` | Move smoothly left without resizing |
 | `Control + Option + →` | Move smoothly right without resizing |
 | `Control + Option + ↑` | Move smoothly up without resizing |
@@ -68,7 +68,7 @@ Left and right halves tile the full work area with no gap between them.
 
 Resizing expands or contracts symmetrically. Expansion stops at the work-area boundary; shrinking respects the app’s minimum size. Full-screen, minimized, or non-resizable windows ignore these four shortcuts.
 
-Hold any of these four resize shortcuts to keep resizing. Pressing adjusts once immediately, then repeats every 100 milliseconds while held. Releasing the arrow or modifier keys stops repetition. There is no extra hold delay and no repeat task while idle.
+Hold a resize shortcut to change width or height continuously at approximately 500 points per second, targeting 60 updates per second. Tap for a small adjustment; releasing the arrow or modifier keys stops immediately, with no resize task while idle. Each frame keeps the window centered using the dimensions actually accepted by the app, without a fixed settling delay. Actual smoothness depends on the target app’s layout cost and Accessibility response time.
 
 Hold a movement shortcut to move smoothly at approximately 500 points per second, targeting 60 position updates per second. Tap for a small adjustment; release stops movement immediately. Only position is written each frame, with no movement task while idle. Actual smoothness depends on the target app’s Accessibility response time. Moves stop at the current display’s work-area boundary. Full-screen, minimized, nonstandard, non-movable, and already out-of-bounds windows ignore these shortcuts.
 

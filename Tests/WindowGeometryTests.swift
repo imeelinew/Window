@@ -7,6 +7,7 @@ struct WindowGeometryTests {
         testScreenSelection()
         testPlacements()
         testCenteredResizing()
+        testContinuousResizing()
         testMovement()
         testMaximizedEdges()
         testAnimationGeometry()
@@ -117,6 +118,52 @@ struct WindowGeometryTests {
             precondition(WindowResize.height.frame(from: area, in: area, by: 50) == nil)
             precondition(WindowResize.width.frame(from: start.offsetBy(dx: -1000, dy: 0), in: area, by: 50) == nil)
             precondition(WindowResize.height.frame(from: start.offsetBy(dx: 0, dy: 1000), in: area, by: 50) == nil)
+        }
+    }
+
+    static func testContinuousResizing() {
+        for origin in [CGPoint.zero, CGPoint(x: -1920, y: -1080), CGPoint(x: 60.5, y: 25)] {
+            let area = CGRect(origin: origin, size: CGSize(width: 1440, height: 900))
+            let start = CGRect(x: area.midX - 400, y: area.midY - 300, width: 800, height: 600)
+            let center = CGPoint(x: start.midX, y: start.midY)
+            for axis in [WindowResize.width, .height] {
+                for speed in [-500.0, 500.0] {
+                    for rate in [30, 60, 120] {
+                        var requested = start
+                        for _ in 0..<(rate / 2) {
+                            requested = axis.frame(from: requested, in: area, by: speed / CGFloat(rate))!
+                            let size = axis.roundedSize(of: requested, in: area, growing: speed > 0)
+                            let applied = CGRect(origin: axis.centeredPosition(for: size, at: center), size: size)
+                            precondition(applied.midX == center.x && applied.midY == center.y)
+                            precondition(area.contains(applied))
+                        }
+                        switch axis {
+                        case .width:
+                            precondition(abs(requested.width - start.width - speed / 2) < 0.001)
+                            precondition(requested.height == start.height)
+                        case .height:
+                            precondition(abs(requested.height - start.height - speed / 2) < 0.001)
+                            precondition(requested.width == start.width)
+                        }
+                    }
+                }
+                // The app can clamp either dimension; center the accepted size.
+                for accepted in [start.size, CGSize(width: 640, height: 480)] {
+                    let frame = CGRect(origin: axis.centeredPosition(for: accepted, at: center), size: accepted)
+                    precondition(frame.midX == center.x && frame.midY == center.y)
+                }
+                precondition(axis.frame(from: start, in: area, by: 0) == nil)
+                precondition(axis.frame(from: start, in: area, by: .nan) == nil)
+            }
+            // Rounding a fractional limit must not extend past the work-area boundary.
+            let nearEdge = CGRect(x: area.minX + 10.3, y: area.minY + 10.3, width: 800, height: 600)
+            for axis in [WindowResize.width, .height] {
+                let capped = axis.frame(from: nearEdge, in: area, by: 50)!
+                let size = axis.roundedSize(of: capped, in: area, growing: true)
+                let frame = CGRect(origin: axis.centeredPosition(for: size, at: CGPoint(x: nearEdge.midX, y: nearEdge.midY)),
+                                   size: size)
+                precondition(area.contains(frame))
+            }
         }
     }
 

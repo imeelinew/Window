@@ -47,24 +47,20 @@ final class WindowController {
         animate(window, state: state, from: frame, to: placement.frame(in: screen.workArea))
     }
 
-    @discardableResult
-    func resizeFocusedWindow(_ axis: WindowResize, by amount: CGFloat) -> Bool {
-        guard let (application, window, frame, screen) = focusedWindow(), window.canResize else { return false }
-        let existing = windows[window]
-        // Each press adjusts the latest request, even before the prior write settles.
-        let base: CGRect
-        if let existing, existing.animation != nil {
-            base = existing.requested
-        } else {
-            base = frame
+    func startResizingFocusedWindow(_ axis: WindowResize, speed: CGFloat,
+                                   whileHeld: @escaping () -> Bool,
+                                   completion: @escaping () -> Void) -> Task<Void, Never>? {
+        guard let (application, window, frame, screen) = focusedWindow(), window.canResize,
+              axis.frame(from: frame, in: screen.workArea, by: speed / 60) != nil else { return nil }
+        remove(window)
+        let animator = animator
+        let pid = application.processIdentifier
+        let accessibleApplication = AXUIElementCreateApplication(pid)
+        return Task { @MainActor in
+            await animator.resizeCentered(window, application: accessibleApplication, pid: pid,
+                                          from: frame, on: screen, axis: axis, speed: speed, whileHeld: whileHeld)
+            if !Task.isCancelled { completion() }
         }
-        guard let target = axis.frame(from: base, in: screen.workArea, by: amount) else { return false }
-        let state = existing ?? State(application, frame: frame)
-        windows[window] = state
-        state.maximized = false
-        state.observed = frame
-        animate(window, state: state, from: frame, to: target, centeredResize: true)
-        return true
     }
 
     func startMovingFocusedWindow(_ direction: WindowMovement,
@@ -170,21 +166,15 @@ final class WindowController {
         windows.removeValue(forKey: window)?.cancelAnimation()
     }
 
-    private func animate(_ window: AccessibleWindow, state: State, from start: CGRect, to target: CGRect,
-                         centeredResize: Bool = false) {
+    private func animate(_ window: AccessibleWindow, state: State, from start: CGRect, to target: CGRect) {
         state.cancelAnimation()
         state.requested = target
         let generation = state.generation
         let animator = animator
         state.animation = Task { @MainActor [weak self, weak state] in
             guard let state else { return }
-            if centeredResize {
-                await animator.resizeCentered(window, application: state.application, pid: state.pid,
-                                              from: start, to: target)
-            } else {
-                await animator.move(window, application: state.application, pid: state.pid,
-                                    from: start, to: target, electron: state.electron, maximized: state.maximized)
-            }
+            await animator.move(window, application: state.application, pid: state.pid,
+                                from: start, to: target, electron: state.electron, maximized: state.maximized)
             guard !Task.isCancelled, state.generation == generation, let self else { return }
             state.animation = nil
             if state.maximized {

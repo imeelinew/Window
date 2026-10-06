@@ -54,24 +54,46 @@ final class WindowAnimator {
     }
 
     func resizeCentered(_ window: AccessibleWindow, application: AXUIElement, pid: pid_t,
-                        from start: CGRect, to target: CGRect) async {
-        guard !Task.isCancelled, window.canResize else { return }
+                        from start: CGRect, on screen: ScreenArea, axis: WindowResize,
+                        speed: CGFloat, whileHeld: () -> Bool) async {
+        guard !Task.isCancelled, whileHeld() else { return }
         let leased = acquire(application, pid: pid)
         defer { if leased { release(pid) } }
-
-        guard window.setSize(target.size) == .success else { return }
-        var actual = window.frame
-        if actual?.size == start.size {
-            guard await pause(40_000_000) else { return }
-            actual = window.frame
+        let center = CGPoint(x: start.midX, y: start.midY)
+        var requested = start
+        var stalledTime = 0.0
+        var lastAppliedSize = start.size
+        await KeyRepeat.frames { elapsed in
+            guard whileHeld(), AXIsProcessTrusted(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  AccessibleWindow.focused(in: application) == window,
+                  let actual = window.movableFrame,
+                  ScreenArea.current.first(where: { $0.identifier == screen.identifier }) == screen,
+                  let target = axis.frame(from: requested, in: screen.workArea,
+                                          by: speed * CGFloat(elapsed)) else { return false }
+            requested = target
+            let size = axis.roundedSize(of: target, in: screen.workArea, growing: speed > 0)
+            guard !Task.isCancelled, whileHeld() else { return false }
+            if size != actual.size {
+                guard window.setSize(size) == .success else { return false }
+            }
+            // Read just AXSize after the write: use the app's accepted dimensions,
+            // including minimum sizes, without a fixed delay or another full-frame query.
+            guard let appliedSize = window.size,
+                  appliedSize.width.isFinite, appliedSize.height.isFinite,
+                  appliedSize.width > 0, appliedSize.height > 0,
+                  !Task.isCancelled, whileHeld(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+            let position = axis.centeredPosition(for: appliedSize, at: center)
+            if position != actual.origin {
+                guard window.setPosition(position) == .success else { return false }
+            }
+            // Some apps acknowledge a size write before applying it. Allow a few
+            // frames to settle; a minimum size or a rejected write ends the hold.
+            stalledTime = appliedSize == lastAppliedSize ? stalledTime + elapsed : 0
+            lastAppliedSize = appliedSize
+            return stalledTime < 0.1
         }
-        // A writable AXSize can still be constrained by the app. Do not move a
-        // window that rejected the resize, or compensate beyond its size limits.
-        guard !Task.isCancelled, let actual,
-              actual.size != start.size,
-              window.canResize else { return }
-        window.setPosition(CGPoint(x: target.midX - actual.width / 2,
-                                   y: target.midY - actual.height / 2))
     }
 
     func move(_ window: AccessibleWindow, application: AXUIElement, pid: pid_t,

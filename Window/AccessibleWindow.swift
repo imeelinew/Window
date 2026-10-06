@@ -55,6 +55,12 @@ nonisolated struct AccessibleWindow: Hashable {
         return CGRect(origin: position, size: size)
     }
 
+    var size: CGSize? {
+        guard let value = axValue(kAXSizeAttribute, type: .cgSize) else { return nil }
+        var size = CGSize.zero
+        return AXValueGetValue(value, .cgSize, &size) ? size : nil
+    }
+
     // One AX round trip validates geometry and state during a continuous move.
     var movableFrame: CGRect? {
         let attributes = [kAXPositionAttribute, kAXSizeAttribute, kAXSubroleAttribute,

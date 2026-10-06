@@ -92,7 +92,25 @@ enum WindowResize {
     case width
     case height
 
+    func roundedSize(of frame: CGRect, in area: CGRect, growing: Bool) -> CGSize {
+        var size = frame.size
+        switch self {
+        case .width:
+            size.width = max(1, frame.width.rounded())
+            if growing { size.width = min(size.width, 2 * min(frame.midX - area.minX, area.maxX - frame.midX)) }
+        case .height:
+            size.height = max(1, frame.height.rounded())
+            if growing { size.height = min(size.height, 2 * min(frame.midY - area.minY, area.maxY - frame.midY)) }
+        }
+        return size
+    }
+
+    func centeredPosition(for size: CGSize, at center: CGPoint) -> CGPoint {
+        CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+    }
+
     func frame(from frame: CGRect, in area: CGRect, by amount: CGFloat) -> CGRect? {
+        guard amount.isFinite, amount != 0 else { return nil }
         switch self {
         case .width:
             let available = 2 * min(frame.midX - area.minX, area.maxX - frame.midX)

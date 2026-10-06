@@ -33,10 +33,13 @@ final class HotKeyManager {
             }
         }
 
-        var repeatsWhileHeld: Bool {
+        var resize: (axis: WindowResize, speed: CGFloat)? {
             switch self {
-            case .increaseWidth, .increaseHeight, .decreaseWidth, .decreaseHeight: true
-            default: false
+            case .increaseWidth: (.width, 500)
+            case .increaseHeight: (.height, 500)
+            case .decreaseWidth: (.width, -500)
+            case .decreaseHeight: (.height, -500)
+            default: nil
             }
         }
 
@@ -59,20 +62,15 @@ final class HotKeyManager {
                 && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
         }
 
-        @discardableResult
-        func perform(using windows: WindowController) -> Bool {
+        func perform(using windows: WindowController) {
             switch self {
             case .maximize: windows.moveFocusedWindow(to: .maximize)
             case .leftHalf: windows.moveFocusedWindow(to: .leftHalf)
             case .rightHalf: windows.moveFocusedWindow(to: .rightHalf)
             case .centered: windows.moveFocusedWindow(to: .centered)
-            case .increaseWidth: return windows.resizeFocusedWindow(.width, by: 50)
-            case .increaseHeight: return windows.resizeFocusedWindow(.height, by: 50)
-            case .decreaseWidth: return windows.resizeFocusedWindow(.width, by: -50)
-            case .decreaseHeight: return windows.resizeFocusedWindow(.height, by: -50)
-            case .moveLeft, .moveRight, .moveUp, .moveDown: break // Handled by the continuous movement task.
+            case .increaseWidth, .increaseHeight, .decreaseWidth, .decreaseHeight,
+                 .moveLeft, .moveRight, .moveUp, .moveDown: break // Handled by a continuous task.
             }
-            return false
         }
     }
 
@@ -122,30 +120,24 @@ final class HotKeyManager {
     private func pressed(_ shortcut: Shortcut) {
         guard heldShortcut != shortcut else { return }
         stopRepeating()
-        if let direction = shortcut.movement {
+        if shortcut.movement != nil || shortcut.resize != nil {
             heldShortcut = shortcut
-            repeatTask = windows.startMovingFocusedWindow(direction) { [weak self] in
+            let whileHeld = { [weak self] in
                 self?.heldShortcut == shortcut && shortcut.isHeld
-            } completion: { [weak self] in
+            }
+            let completion = { [weak self] in
                 if self?.heldShortcut == shortcut { self?.stopRepeating() }
+            }
+            if let direction = shortcut.movement {
+                repeatTask = windows.startMovingFocusedWindow(direction, whileHeld: whileHeld, completion: completion)
+            } else if let resize = shortcut.resize {
+                repeatTask = windows.startResizingFocusedWindow(resize.axis, speed: resize.speed,
+                                                               whileHeld: whileHeld, completion: completion)
             }
             if repeatTask == nil { heldShortcut = nil }
             return
         }
-        guard shortcut.perform(using: windows), shortcut.repeatsWhileHeld else { return }
-        heldShortcut = shortcut
-        repeatTask = KeyRepeat.start(every: 0.1) { [weak self] in
-            self?.repeatHeldShortcut(shortcut) == true
-        }
-    }
-
-    private func repeatHeldShortcut(_ shortcut: Shortcut) -> Bool {
-        guard heldShortcut == shortcut, shortcut.isHeld,
-              shortcut.perform(using: windows) else {
-            stopRepeating()
-            return false
-        }
-        return true
+        shortcut.perform(using: windows)
     }
 
     private func stopRepeating() {
