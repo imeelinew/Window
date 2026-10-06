@@ -33,6 +33,12 @@ nonisolated struct AccessibleWindow: Hashable {
         return isSettable(kAXSizeAttribute) && isSettable(kAXPositionAttribute)
     }
 
+    var canMove: Bool {
+        isStandardUnminimized
+            && element.attribute("AXFullScreen") as? Bool != true
+            && isSettable(kAXPositionAttribute)
+    }
+
     private func isSettable(_ attribute: String) -> Bool {
         var settable: DarwinBoolean = false
         return AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success
@@ -45,6 +51,27 @@ nonisolated struct AccessibleWindow: Hashable {
         var position = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionValue, .cgPoint, &position),
+              AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
+        return CGRect(origin: position, size: size)
+    }
+
+    // One AX round trip validates geometry and state during a continuous move.
+    var movableFrame: CGRect? {
+        let attributes = [kAXPositionAttribute, kAXSizeAttribute, kAXSubroleAttribute,
+                          kAXMinimizedAttribute, "AXFullScreen"] as CFArray
+        var result: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(element, attributes, [], &result) == .success,
+              let values = result as? [CFTypeRef], values.count == 5,
+              values[2] as? String == kAXStandardWindowSubrole,
+              values[3] as? Bool == false, values[4] as? Bool != true,
+              CFGetTypeID(values[0]) == AXValueGetTypeID(),
+              CFGetTypeID(values[1]) == AXValueGetTypeID() else { return nil }
+        let positionValue = values[0] as! AXValue
+        let sizeValue = values[1] as! AXValue
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetType(positionValue) == .cgPoint, AXValueGetType(sizeValue) == .cgSize,
+              AXValueGetValue(positionValue, .cgPoint, &position),
               AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
         return CGRect(origin: position, size: size)
     }
@@ -62,11 +89,11 @@ nonisolated struct AccessibleWindow: Hashable {
         setPosition(frame.origin)
     }
 
-    func setPosition(_ position: CGPoint) {
+    @discardableResult
+    func setPosition(_ position: CGPoint) -> AXError {
         var position = position
-        if let value = AXValueCreate(.cgPoint, &position) {
-            AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
-        }
+        guard let value = AXValueCreate(.cgPoint, &position) else { return .illegalArgument }
+        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
     }
 
     @discardableResult

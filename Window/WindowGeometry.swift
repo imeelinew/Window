@@ -62,6 +62,32 @@ enum WindowPlacement: UInt32, CaseIterable {
     }
 }
 
+enum WindowMovement: CaseIterable {
+    case left
+    case right
+    case up
+    case down
+
+    func frame(from frame: CGRect, in area: CGRect, by distance: CGFloat = 50) -> CGRect? {
+        guard [frame.minX, frame.minY, frame.width, frame.height,
+               area.minX, area.minY, area.width, area.height].allSatisfy({ $0.isFinite }),
+              distance.isFinite, distance > 0,
+              frame.width > 0, frame.height > 0, area.contains(frame) else { return nil }
+        let target: CGRect
+        switch self {
+        case .left:
+            target = frame.offsetBy(dx: -min(distance, frame.minX - area.minX), dy: 0)
+        case .right:
+            target = frame.offsetBy(dx: min(distance, area.maxX - frame.maxX), dy: 0)
+        case .up:
+            target = frame.offsetBy(dx: 0, dy: -min(distance, frame.minY - area.minY))
+        case .down:
+            target = frame.offsetBy(dx: 0, dy: min(distance, area.maxY - frame.maxY))
+        }
+        return target == frame ? nil : target
+    }
+}
+
 enum WindowResize {
     case width
     case height

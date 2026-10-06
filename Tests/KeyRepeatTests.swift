@@ -7,7 +7,53 @@ struct KeyRepeatTests {
         try await testTap()
         try await testReleaseWhileRepeating()
         try await testSwitchDirection()
+        await testFrameCadence()
+        try await testFrameCancellation()
+        await testSlowFrameSkipsBacklog()
         print("Key repeat: all checks passed")
+    }
+
+    @MainActor static func testFrameCadence() async {
+        var frames = 0
+        var elapsedTime = 0.0
+        let start = ProcessInfo.processInfo.systemUptime
+        await KeyRepeat.frames { elapsed in
+            precondition(elapsed > 0 && elapsed <= 0.1)
+            elapsedTime += elapsed
+            frames += 1
+            return elapsedTime < 0.5
+        }
+        let duration = ProcessInfo.processInfo.systemUptime - start
+        precondition(frames >= 15, "Continuous movement must not use the old 10 Hz cadence")
+        precondition(abs(duration - elapsedTime) < 0.02, "Movement distance must use real elapsed time")
+        print(String(format: "Movement scheduler: %.1f updates/sec", Double(frames) / duration))
+    }
+
+    @MainActor static func testFrameCancellation() async throws {
+        var count = 0
+        let task = Task { @MainActor in
+            await KeyRepeat.frames { _ in count += 1; return true }
+        }
+        try await Task.sleep(nanoseconds: 75_000_000)
+        precondition(count > 0)
+        task.cancel()
+        await task.value
+        let stoppedCount = count
+        try await Task.sleep(nanoseconds: 50_000_000)
+        precondition(count == stoppedCount, "Release must stop movement with no final snap")
+    }
+
+    @MainActor static func testSlowFrameSkipsBacklog() async {
+        var times: [TimeInterval] = []
+        await KeyRepeat.frames { _ in
+            times.append(ProcessInfo.processInfo.systemUptime)
+            if times.count == 1 { Thread.sleep(forTimeInterval: 0.04) }
+            return times.count < 4
+        }
+        for index in 1..<times.count {
+            precondition(times[index] - times[index - 1] > 0.005,
+                         "Slow AX work must skip stale frames instead of bursting queued writes")
+        }
     }
 
     @MainActor static func testImmediateCadenceAndCancellation() async throws {

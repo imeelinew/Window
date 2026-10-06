@@ -19,6 +19,40 @@ final class WindowAnimator {
             ).path)
     }
 
+    func shift(_ window: AccessibleWindow, application: AXUIElement, pid: pid_t,
+               from start: CGRect, on screen: ScreenArea, direction: WindowMovement,
+               whileHeld: () -> Bool) async {
+        guard !Task.isCancelled, whileHeld() else { return }
+        let leased = acquire(application, pid: pid)
+        defer { if leased { release(pid) } }
+        var requested = start
+        var lastPosition = start.origin
+        await KeyRepeat.frames { elapsed in
+            guard whileHeld(), AXIsProcessTrusted(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  AccessibleWindow.focused(in: application) == window,
+                  let actual = window.movableFrame,
+                  actual.size == start.size, screen.workArea.contains(actual),
+                  ScreenArea.current.first(where: { $0.identifier == screen.identifier }) == screen,
+                  let target = direction.frame(from: requested, in: screen.workArea,
+                                               by: CGFloat(500 * elapsed)) else { return false }
+            requested = target
+            // Keep subpoint progress, but send integral coordinates to avoid AX rounding jitter.
+            let position = CGPoint(
+                x: target.minX == start.minX ? start.minX
+                    : min(max(target.minX.rounded(), screen.workArea.minX), screen.workArea.maxX - start.width),
+                y: target.minY == start.minY ? start.minY
+                    : min(max(target.minY.rounded(), screen.workArea.minY), screen.workArea.maxY - start.height)
+            )
+            guard !Task.isCancelled, whileHeld() else { return false }
+            if position != lastPosition {
+                guard window.setPosition(position) == .success else { return false }
+                lastPosition = position
+            }
+            return true
+        }
+    }
+
     func resizeCentered(_ window: AccessibleWindow, application: AXUIElement, pid: pid_t,
                         from start: CGRect, to target: CGRect) async {
         guard !Task.isCancelled, window.canResize else { return }

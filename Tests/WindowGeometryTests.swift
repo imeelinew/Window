@@ -7,6 +7,7 @@ struct WindowGeometryTests {
         testScreenSelection()
         testPlacements()
         testCenteredResizing()
+        testMovement()
         testMaximizedEdges()
         testAnimationGeometry()
         print("Window geometry: all checks passed")
@@ -116,6 +117,57 @@ struct WindowGeometryTests {
             precondition(WindowResize.height.frame(from: area, in: area, by: 50) == nil)
             precondition(WindowResize.width.frame(from: start.offsetBy(dx: -1000, dy: 0), in: area, by: 50) == nil)
             precondition(WindowResize.height.frame(from: start.offsetBy(dx: 0, dy: 1000), in: area, by: 50) == nil)
+        }
+    }
+
+    static func testMovement() {
+        for origin in [CGPoint.zero, CGPoint(x: -1920, y: -1080), CGPoint(x: 60.5, y: 25)] {
+            let area = CGRect(origin: origin, size: CGSize(width: 1440, height: 900))
+            let start = CGRect(x: area.minX + 100, y: area.minY + 100, width: 800, height: 600)
+            precondition(WindowMovement.left.frame(from: start, in: area) == start.offsetBy(dx: -50, dy: 0))
+            precondition(WindowMovement.right.frame(from: start, in: area) == start.offsetBy(dx: 50, dy: 0))
+            precondition(WindowMovement.up.frame(from: start, in: area) == start.offsetBy(dx: 0, dy: -50))
+            precondition(WindowMovement.down.frame(from: start, in: area) == start.offsetBy(dx: 0, dy: 50))
+            // Different frame rates cover the same distance over the same elapsed time.
+            for rate in [30, 60, 120] {
+                var frame = start
+                for _ in 0..<rate {
+                    frame = WindowMovement.right.frame(from: frame, in: area, by: 500 / CGFloat(rate))!
+                }
+                precondition(abs(frame.minX - start.minX - 500) < 0.001)
+                precondition(frame.size == start.size && frame.minY == start.minY)
+            }
+            precondition(WindowMovement.left.frame(from: start, in: area, by: 0) == nil)
+            precondition(WindowMovement.left.frame(from: start, in: area, by: -.infinity) == nil)
+            let nearEdges: [(WindowMovement, CGRect, CGRect)] = [
+                (.left, CGRect(x: area.minX + 10, y: start.minY, width: 800, height: 600),
+                 CGRect(x: area.minX, y: start.minY, width: 800, height: 600)),
+                (.right, CGRect(x: area.maxX - 810, y: start.minY, width: 800, height: 600),
+                 CGRect(x: area.maxX - 800, y: start.minY, width: 800, height: 600)),
+                (.up, CGRect(x: start.minX, y: area.minY + 10, width: 800, height: 600),
+                 CGRect(x: start.minX, y: area.minY, width: 800, height: 600)),
+                (.down, CGRect(x: start.minX, y: area.maxY - 610, width: 800, height: 600),
+                 CGRect(x: start.minX, y: area.maxY - 600, width: 800, height: 600))
+            ]
+            for (direction, frame, expected) in nearEdges {
+                precondition(direction.frame(from: frame, in: area) == expected)
+                precondition(direction.frame(from: expected, in: area) == nil)
+            }
+            for direction in WindowMovement.allCases {
+                var frame = start
+                var steps = 0
+                while let target = direction.frame(from: frame, in: area) {
+                    precondition(target.size == start.size && area.contains(target))
+                    frame = target
+                    steps += 1
+                    precondition(steps < 30)
+                }
+                precondition(direction.frame(from: area, in: area) == nil)
+                precondition(direction.frame(from: start.offsetBy(dx: -101, dy: 0), in: area) == nil)
+                precondition(direction.frame(from: area.insetBy(dx: -1, dy: -1), in: area) == nil)
+                precondition(direction.frame(from: CGRect(origin: origin, size: .zero), in: area) == nil)
+                precondition(direction.frame(from: .infinite, in: area) == nil)
+            }
         }
     }
 

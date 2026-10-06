@@ -11,19 +11,24 @@ final class HotKeyManager {
         case increaseHeight
         case decreaseWidth
         case decreaseHeight
+        case moveLeft
+        case moveRight
+        case moveUp
+        case moveDown
 
         var keyCode: UInt32 {
             switch self {
-            case .maximize, .increaseHeight: UInt32(kVK_UpArrow)
-            case .leftHalf, .decreaseWidth: UInt32(kVK_LeftArrow)
-            case .rightHalf, .increaseWidth: UInt32(kVK_RightArrow)
-            case .centered, .decreaseHeight: UInt32(kVK_DownArrow)
+            case .maximize, .increaseHeight, .moveUp: UInt32(kVK_UpArrow)
+            case .leftHalf, .decreaseWidth, .moveLeft: UInt32(kVK_LeftArrow)
+            case .rightHalf, .increaseWidth, .moveRight: UInt32(kVK_RightArrow)
+            case .centered, .decreaseHeight, .moveDown: UInt32(kVK_DownArrow)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
             case .increaseWidth, .increaseHeight, .decreaseWidth, .decreaseHeight: UInt32(cmdKey | optionKey)
+            case .moveLeft, .moveRight, .moveUp, .moveDown: UInt32(controlKey | optionKey)
             default: UInt32(cmdKey)
             }
         }
@@ -35,10 +40,22 @@ final class HotKeyManager {
             }
         }
 
+        var movement: WindowMovement? {
+            switch self {
+            case .moveLeft: .left
+            case .moveRight: .right
+            case .moveUp: .up
+            case .moveDown: .down
+            default: nil
+            }
+        }
+
         var isHeld: Bool {
             let modifiers = CGEventSource.flagsState(.combinedSessionState)
                 .intersection([.maskCommand, .maskAlternate, .maskShift, .maskControl])
-            return modifiers == [.maskCommand, .maskAlternate]
+            let required: CGEventFlags = self.modifiers == UInt32(controlKey | optionKey)
+                ? [.maskControl, .maskAlternate] : [.maskCommand, .maskAlternate]
+            return modifiers == required
                 && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
         }
 
@@ -53,6 +70,7 @@ final class HotKeyManager {
             case .increaseHeight: return windows.resizeFocusedWindow(.height, by: 50)
             case .decreaseWidth: return windows.resizeFocusedWindow(.width, by: -50)
             case .decreaseHeight: return windows.resizeFocusedWindow(.height, by: -50)
+            case .moveLeft, .moveRight, .moveUp, .moveDown: break // Handled by the continuous movement task.
             }
             return false
         }
@@ -104,6 +122,16 @@ final class HotKeyManager {
     private func pressed(_ shortcut: Shortcut) {
         guard heldShortcut != shortcut else { return }
         stopRepeating()
+        if let direction = shortcut.movement {
+            heldShortcut = shortcut
+            repeatTask = windows.startMovingFocusedWindow(direction) { [weak self] in
+                self?.heldShortcut == shortcut && shortcut.isHeld
+            } completion: { [weak self] in
+                if self?.heldShortcut == shortcut { self?.stopRepeating() }
+            }
+            if repeatTask == nil { heldShortcut = nil }
+            return
+        }
         guard shortcut.perform(using: windows), shortcut.repeatsWhileHeld else { return }
         heldShortcut = shortcut
         repeatTask = KeyRepeat.start(every: 0.1) { [weak self] in

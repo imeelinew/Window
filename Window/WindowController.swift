@@ -67,6 +67,24 @@ final class WindowController {
         return true
     }
 
+    func startMovingFocusedWindow(_ direction: WindowMovement,
+                                  whileHeld: @escaping () -> Bool,
+                                  completion: @escaping () -> Void) -> Task<Void, Never>? {
+        guard let (application, window, frame, screen) = focusedWindow(), window.canMove,
+              direction.frame(from: frame, in: screen.workArea) != nil else { return nil }
+        // Resolve once per hold; the animator only validates the same focused window.
+        remove(window)
+        let animator = animator
+        let pid = application.processIdentifier
+        let accessibleApplication = AXUIElementCreateApplication(pid)
+        return Task { @MainActor in
+            await animator.shift(window, application: accessibleApplication, pid: pid,
+                                 from: frame, on: screen, direction: direction, whileHeld: whileHeld)
+            // A cancelled older direction must never clear a newer hold.
+            if !Task.isCancelled { completion() }
+        }
+    }
+
     private func focusedWindow() -> (NSRunningApplication, AccessibleWindow, CGRect, ScreenArea)? {
         guard AXIsProcessTrusted(),
               let application = NSWorkspace.shared.frontmostApplication,
