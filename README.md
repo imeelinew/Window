@@ -5,20 +5,15 @@
 <h1 align="center">Window</h1>
 
 <p align="center">
-  一款只负责窗口管理的轻量原生 macOS 后台工具。<br>
-  没有主窗口、Dock 图标或菜单栏图标，用全局快捷键完成最大化、半屏和居中。
+  A lightweight native macOS window manager that stays in the background.<br>
+  No main window, Dock icon, or menu bar icon — global hotkeys handle maximize, halves, and centering.
 </p>
 
 <p align="center">
-  <a href="https://github.com/imeelinew/Window/releases">下载</a> ·
-  <a href="#快捷键">快捷键</a> ·
-  <a href="#安装">安装</a> ·
-  <a href="#从源码构建">从源码构建</a>
-</p>
-
-<p align="center">
-  <a href="README.md">简体中文</a>
-  <a href="README.en.md">English</a>
+  <a href="https://github.com/imeelinew/Window/releases">Download</a> ·
+  <a href="#hotkeys">Hotkeys</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#build-from-source">Build from source</a>
 </p>
 
 <p align="center">
@@ -30,72 +25,72 @@
 
 ---
 
-## 简介
+## About
 
-Window 是 [Eli New](https://elinew.tech) 开发的原生 macOS 窗口管理工具，只做一件事：用全局快捷键调整当前聚焦窗口。启动后它作为后台进程运行，不出现在 Dock，也没有菜单栏图标或设置窗口。空闲时不轮询，由快捷键和系统事件驱动。
+Window is a native macOS window manager by [Eli New](https://elinew.tech). It does one job: move and resize the focused window with global hotkeys. It runs as a background process with no Dock icon, menu bar extra, or settings window. Idle time is not spent polling; work is driven by hotkeys and system events.
 
-窗口始终落到当前屏幕的**可用区域**内，会避开菜单栏和 Dock。多显示器时，操作作用在窗口所在的那块屏幕上。首次启动会通过系统标准流程请求辅助功能权限，授权后快捷键才会生效。
+Placements use the current display’s **visible work area**, so the menu bar and Dock are left clear. On multiple displays, the window is placed on the screen it already occupies. The first launch uses the standard macOS Accessibility prompt; hotkeys work after permission is granted.
 
-## 为什么开发 Window
+## Why Window
 
-macOS 的 Dock 会随图标数量改变尺寸，屏幕可用工作区也会跟着变。已经最大化的第三方窗口通常不会重新计算高度，于是 Dock 变高或变矮之后，窗口底部就可能留下一块空隙。
+The macOS Dock changes size as icons come and go, and the screen’s available work area changes with it. Maximized third-party windows usually do not recalculate their height, so a persistent gap can appear at the bottom after the Dock grows or shrinks.
 
-Window 要解决的就是这件事：用快捷键把窗口摆到可用区域，并在 Dock 或显示器布局变化后，让已经最大化的窗口继续贴合屏幕边界。如果你后来自己拖动或缩放了这个窗口，Window 会停止跟踪，把控制权交还给你。
+Window exists to keep those windows flush: hotkeys snap the focused window into the work area, and already-maximized windows stay aligned when the Dock or display layout changes. If you later drag or resize that window yourself, Window stops tracking it.
 
-- **后台运行**：无主窗口、无 Dock 图标、无菜单栏图标
-- **快捷键驱动**：只处理当前聚焦窗口
-- **贴合工作区**：最大化与半屏都按菜单栏和 Dock 让出后的可用区域计算
-- **最大化保持贴合**：Dock 缩放、显示器插拔或排列变化后，已最大化窗口会重新对齐
+- **Background only**: no main window, Dock icon, or menu bar icon
+- **Hotkey driven**: acts on the currently focused window
+- **Work-area aware**: maximize and half-screen layouts respect the menu bar and Dock
+- **Maximized windows stay flush**: Dock resizing and display changes re-align windows that Window is still managing
 
-## 快捷键
+## Hotkeys
 
-| 快捷键 | 作用 |
+| Shortcut | Action |
 | --- | --- |
-| `Command + ↑` | 将当前窗口最大化到所在屏幕的可用区域 |
-| `Command + ←` | 将当前窗口放到左半屏 |
-| `Command + →` | 将当前窗口放到右半屏 |
-| `Command + ↓` | 将当前窗口调整为 998 × 836，并在可用区域内水平、垂直居中 |
-| `Option + Command + ←` | 平滑宽度减少，保持窗口中心不动 |
-| `Option + Command + →` | 平滑宽度增加，保持窗口中心不动 |
-| `Option + Command + ↑` | 平滑高度增加，保持窗口中心不动 |
-| `Option + Command + ↓` | 平滑高度减少，保持窗口中心不动 |
-| `Control + Option + ←` | 窗口平滑向左移动，尺寸不变 |
-| `Control + Option + →` | 窗口平滑向右移动，尺寸不变 |
-| `Control + Option + ↑` | 窗口平滑向上移动，尺寸不变 |
-| `Control + Option + ↓` | 窗口平滑向下移动，尺寸不变 |
+| `Command + ↑` | Maximize the focused window to the current screen’s available area |
+| `Command + ←` | Place the focused window on the left half |
+| `Command + →` | Place the focused window on the right half |
+| `Command + ↓` | Resize the focused window to 998 × 836 and center it in the available area |
+| `Option + Command + ←` | Decrease width smoothly, keeping the window center fixed |
+| `Option + Command + →` | Increase width smoothly, keeping the window center fixed |
+| `Option + Command + ↑` | Increase height smoothly, keeping the window center fixed |
+| `Option + Command + ↓` | Decrease height smoothly, keeping the window center fixed |
+| `Control + Option + ←` | Move smoothly left without resizing |
+| `Control + Option + →` | Move smoothly right without resizing |
+| `Control + Option + ↑` | Move smoothly up without resizing |
+| `Control + Option + ↓` | Move smoothly down without resizing |
 
-左半屏与右半屏会拼满整块可用区域，中间不留缝。
+Left and right halves tile the full work area with no gap between them.
 
-尺寸调整向两侧对称扩展或收缩；增大时止于屏幕可用区域边界，缩小时遵守应用自身的最小尺寸。全屏、最小化或不能缩放的窗口会忽略这四个快捷键。
+Resizing expands or contracts symmetrically. Expansion stops at the work-area boundary; shrinking respects the app’s minimum size. Full-screen, minimized, or non-resizable windows ignore these four shortcuts.
 
-这四个尺寸快捷键按住即连续调整，以 60 fps 为目标更新，宽度或高度变化速度约为 500 点/秒。轻按可微调，松开方向键或组合修饰键后立即停止，空闲时没有调整任务。每帧按应用实际接受的尺寸保持居中，不再等待固定的尺寸生效延迟；实际流畅度取决于目标应用的布局开销和辅助功能响应速度。
+Hold a resize shortcut to change width or height continuously at approximately 500 points per second, targeting 60 updates per second. Tap for a small adjustment; releasing the arrow or modifier keys stops immediately, with no resize task while idle. Each frame keeps the window centered using the dimensions actually accepted by the app, without a fixed settling delay. Actual smoothness depends on the target app’s layout cost and Accessibility response time.
 
-移动快捷键按住即平滑移动，以 60 fps 为目标更新位置，速度约为 500 点/秒；轻按可微调，松开立即停止。每帧只调整位置，不改变窗口尺寸；空闲时没有移动任务。实际流畅度取决于目标应用对辅助功能调用的响应速度。移动止于当前屏幕的可用区域边界；全屏、最小化、非标准、不可移动，以及已经超出可用区域的窗口会忽略这些快捷键。
+Hold a movement shortcut to move smoothly at approximately 500 points per second, targeting 60 position updates per second. Tap for a small adjustment; release stops movement immediately. Only position is written each frame, with no movement task while idle. Actual smoothness depends on the target app’s Accessibility response time. Moves stop at the current display’s work-area boundary. Full-screen, minimized, nonstandard, non-movable, and already out-of-bounds windows ignore these shortcuts.
 
-## 工作方式
+## Behavior
 
-- 只操作最前方应用的当前聚焦窗口，不会动到 Window 自己。
-- 位置和尺寸以屏幕的可见区域为准，因此菜单栏和 Dock 占用的空间会被留出来。
-- 窗口落在哪块显示器上，就按那块显示器的可用区域摆放。
-- 最大化后的窗口会继续被跟踪：Dock 尺寸变化、屏幕布局变化、应用重新显示或切回当前 Space 时，会重新贴合可用区域。你手动改过的窗口不再跟踪。
-- 窗口移动带有短暂动画；系统开启「减弱动态效果」时会直接落到目标位置。
-- Electron 应用使用单独的动画路径，避免反复改尺寸造成卡顿。
+- Only the frontmost app’s focused window is moved; Window never operates on itself.
+- Frames are computed from the screen’s visible area, so space taken by the menu bar and Dock is reserved.
+- The window is placed on the display that currently contains it.
+- After maximize, Window keeps tracking that window: Dock size changes, screen layout changes, and the app becoming visible or returning from another Space will re-fit it to the work area. A window you move or resize by hand is dropped from tracking.
+- Moves are animated; with Reduce Motion enabled, the window jumps to the target frame.
+- Electron apps use a separate animation path so repeated size writes do not stutter.
 
-## 权限与更新
+## Permissions and updates
 
-Window 通过辅助功能 API 读取和设置窗口位置，因此需要辅助功能权限。首次启动会弹出系统授权提示；也可稍后在 **系统设置 → 隐私与安全性 → 辅助功能** 中打开。
+Window reads and sets window frames through the Accessibility API, so Accessibility permission is required. The first launch shows the system prompt; you can also enable it later in **System Settings → Privacy & Security → Accessibility**.
 
-应用会通过 Sparkle 自动检查 [GitHub Releases](https://github.com/imeelinew/Window/releases) 上的更新。
+The app checks [GitHub Releases](https://github.com/imeelinew/Window/releases) for updates automatically with Sparkle.
 
-## 安装
+## Install
 
-需要 **macOS 14** 或更高版本。
+Requires **macOS 14** or later.
 
-从 [Releases 页面](https://github.com/imeelinew/Window/releases)下载最新版，把 `Window.app` 放到 `/Applications`，然后打开一次并授予辅助功能权限。
+Download the latest build from the [Releases page](https://github.com/imeelinew/Window/releases), move `Window.app` to `/Applications`, open it once, and grant Accessibility permission.
 
-## 从源码构建
+## Build from source
 
-工程由 Xcode 26 创建，运行目标为 macOS 14 或更高版本。
+The Xcode project was created with Xcode 26. The app’s deployment target is macOS 14 or later.
 
 ```bash
 git clone https://github.com/imeelinew/Window.git
@@ -103,20 +98,20 @@ cd Window
 open Window.xcodeproj
 ```
 
-在 Xcode 中选择 **Window** scheme，然后执行 **Product → Run**。首次使用快捷键前，请按系统提示授予辅助功能权限。
+Select the **Window** scheme and choose **Product → Run**. Grant Accessibility permission when prompted before using the hotkeys.
 
-也可一键构建 Release、安装到 `/Applications/Window.app` 并重新启动：
+To build Release, install it to `/Applications/Window.app`, and restart the app:
 
 ```bash
 ./scripts/install.sh
 ```
 
-窗口几何回归测试（不启动应用、不需要辅助功能权限）：
+Run geometry regression checks without launching the app or requiring Accessibility permission:
 
 ```bash
 ./Tests/run.sh
 ```
 
-## 许可证
+## License
 
-Window 以 [MIT License](LICENSE) 发布。Copyright © 2026 [Eli New](https://elinew.tech)。
+Window is released under the [MIT License](LICENSE). Copyright © 2026 [Eli New](https://elinew.tech).
